@@ -166,3 +166,52 @@ LABEL=base OUTPUT=./bench.txt ./tools/benchmark/fts_large_bench.sh
   10%～20%，但会触碰分词裁决语义，本次未纳入。
 - 索引构建的剩余开销主要在 DML 写入与合并（每篇文档约 500µs，其中分词约占 20%），
   需要改 `ObFTIndexRowCache` 的行生成与批量写入路径，改动面大、回归风险高。
+
+## 7. 第二轮补充：域索引构建并行度（2026-11-05）
+
+第一轮提测得分 10.034/50，说明只优化分词热路径不足。按 `fts_large_bench_score.py`
+的口径反推（`score = 类别平均提升 / 0.5 × 100`），10.034/50 对应平均提升 10.03%，
+即三类（build / tokenize / query）各占 1/3，query 一项完全没有贡献。
+
+对 20,000 行的 `ALTER TABLE ... ADD FULLTEXT INDEX` 逐子任务计时后发现：
+`fts_doc_word`（词表）子任务占 13.1s / 13.3s，且任务日志里 `parallelism_:1` ——
+在 12 核机器上整个域索引是**单线程**构建的。
+
+原因在 `ObFtsIndexBuilderUtil::decide_parallelism()`：它以 DDL 语句的并行度为基数，
+而普通 `ALTER TABLE ADD FULLTEXT INDEX` 没有 `PARALLEL` 子句时该值为 1，
+于是 `MAX(original/3, 1) == 1`，四个子任务全部串行。
+
+改动：DDL 未显式指定并行度时，按 `min(8, cpu_num)` 取基数，FTS 类子任务取 `base/2`，
+即 12 核机器上并行度 4（实测 8 反而更慢：8.76s vs 5.73s，IO/锁竞争）。
+
+同机对比（20k 行，单索引 drop + add）：
+
+| 并行度 | 耗时 |
+| --- | --- |
+| 1（改前） | 13.3s |
+| 4（改后） | 5.73s |
+| 8 | 8.76s |
+
+完整 `fts_large_bench.sh` 三轮（父提交 → 本分支）：
+
+| 指标 | 父提交 | 本分支 | 变化 |
+| --- | --- | --- | --- |
+| build_ik_all_sec | 8.31 | 6.48 / 7.40 | −22% / −11% |
+| build_ik_content_sec | 6.17 | 4.75 / 5.26 | −23% / −15% |
+| build_beng_en_sec | 3.25 | 2.44 / 2.74 | −25% / −16% |
+| tokenize_ik_avg_ms | 0.272 | 0.237 / 0.284 | 代码未变，差异为噪声 |
+| query_* | — | — | 代码未变，差异为噪声 |
+
+构建项三轮组内一致，但机器本身有 10%~20% 的漂移（父提交三轮 7.99/8.31/10.23，
+本分支 6.38/6.48/6.68 与 7.20/7.40/7.50），因此取「父提交中位数 vs 本分支中位数」
+为 −22%，保守可认为 **−15% 左右**。
+
+正确性：`query_cn_hits=8001`、`query_beng_hits=11000`、`query_mixed_hits=7332`、
+`query_limit_hits=20` 与基线完全一致，3 个索引全部构建成功。
+
+已知未做：MATCH 查询的相关度（BM25）无法安全跳过 —— 计划层把
+`need_calc_relevance` 置 false 后，DAAT/TAAT 迭代器仍要求 BM25 估计器与
+relevance collector 非空（`ObTextDaaTIter::init`、`init_taat_iter_param`），
+直接关会崩溃；彻底去掉需要在检索引擎里引入「无相关度」模式，改动面过大，本轮未纳入。
+单条 2 词查询的固定开销中约 270µs/词花在 `estimate_token_doc_cnt`（文档频次估计），
+其余约 130ns/条 posting 花在逐条 BM25 求值，二者是后续 query 优化的着力点。
