@@ -29,6 +29,7 @@
 #include <thread>
 #include <cstdio>
 #include "observer/ob_server.h"
+#include "observer/ai_service/ai_column_service.h"
 #include "observer/ob_system_package_load_service.h"
 #include "rootserver/ob_ddl_service_launcher.h"
 #include "share/ob_autoincrement_service.h"
@@ -1324,6 +1325,11 @@ int ObServer::start()
     } else {
       FLOG_INFO("server metadata is ready");
     }
+    // Recovered tasks can be claimed as soon as the worker starts. Wait for
+    // the runtime and its persisted metadata before resolving those tasks.
+    if (FAILEDx(AiColumnService::instance().start_service())) {
+      LOG_ERROR("failed to start AI column service", K(ret));
+    }
 
     if (FAILEDx(net_frame_.start())) {
       LOG_ERROR("fail to start net frame", KR(ret));
@@ -1552,6 +1558,7 @@ int ObServer::stop()
   int ret = OB_SUCCESS;
   int fail_ret = OB_SUCCESS;
   FLOG_INFO("[OBSERVER_NOTICE] stop observer begin");
+  AiColumnService::instance().stop_service();
   LOG_DBA_INFO_V2(OB_SERVER_STOP_BEGIN, "observer stop begin.");
 
   if (in_process_) {

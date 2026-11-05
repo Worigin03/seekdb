@@ -1483,6 +1483,12 @@ int ObInnerSQLConnectionAccess::create_connection_with_external_session(
       session, connection);
 }
 
+int ObInnerSQLConnectionAccess::create_connection_with_owned_session(
+    common::sqlclient::ObISQLConnectionGuard &connection)
+{
+  return observer::ObInnerSQLConnection::create_connection_with_owned_session(true, 0, connection);
+}
+
 int ObInnerSQLConnectionAccess::create_spi_connection_with_external_session(
     sql::ObSQLSessionInfo *session,
     common::sqlclient::ObISQLConnectionGuard &connection)

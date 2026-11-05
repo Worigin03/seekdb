@@ -671,6 +671,7 @@ public:
   static const int64_t CALCULABLE_EXPR_NUM = 1;
   typedef common::ObSEArray<ObHiddenColumnItem, CALCULABLE_EXPR_NUM, common::ModulePageAllocator, true> CalculableItems;
 public:
+  common::ObString ai_column_read_spec_;
   int64_t question_marks_count_;
   CalculableItems calculable_items_;
   //array binding param exprs, mark the all array binding param expr in the batch stmt

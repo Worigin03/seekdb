@@ -16,6 +16,8 @@
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
 #include "sql/printer/ob_schema_printer.h"
+#include "sql/ai_column/ai_column_definition.h"
+#include "common/mysqlclient/ob_mysql_transaction.h"
 #include "share/ob_autoincrement_service.h"
 #include "sql/resolver/expr/ob_raw_expr_util.h"
 
@@ -212,6 +214,14 @@ int ObSchemaPrinter::print_table_definition_columns(const ObTableSchema &table_s
           if (OB_FAIL(print_generated_column_definition(*col, buf, buf_len, table_schema, pos))) {
           }
         }
+        if (OB_SUCC(ret) && col->is_ai_column()) {
+          try {
+            const auto definition = sql::ai_column::Definition::decode(col->get_ai_column_info_str());
+            ret = databuff_printf(buf, buf_len, pos, " AI COLUMN (%.*s) WITH (sync_mode='async', max_retries=%d)",
+                                  static_cast<int>(definition.expression.size()), definition.expression.data(), definition.max_retries);
+          } catch (const std::bad_alloc &) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+            catch (const std::exception &) { ret = OB_INVALID_DATA; }
+        }
         // mysql mode
         if (OB_SUCC(ret)) {
           if (!col->is_nullable()) {
@@ -231,7 +241,7 @@ int ObSchemaPrinter::print_table_definition_columns(const ObTableSchema &table_s
             SHARE_SCHEMA_LOG(WARN, "fail to print geometry srid", K(ret), K(srid));
           }
         }
-        if (OB_SUCC(ret) && !col->is_generated_column()) {
+        if (OB_SUCC(ret) && !col->is_generated_column() && !col->is_ai_column()) {
           //if column is not permit null and default value does not specify , don't  display DEFAULT NULL
           if (OB_SUCC(ret)) {
             if (!(ObNullType == col->get_cur_default_value().get_type() && !col->is_nullable())

@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/ai_column/ai_column_definition.h"
 #include "sql/resolver/ddl/ob_create_table_resolver.h"
 #include "sql/resolver/dml/ob_select_resolver.h"
 #include "sql/resolver/ddl/ob_fts_index_builder_util.h"
@@ -932,6 +933,27 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
       } else if (OB_FAIL(resolve_primary_key_node(*primary_node, stats))) {
       }
       if (OB_SUCC(ret)) {
+        const int64_t visible_count = table_schema.get_column_count();
+        int64_t ai_count = 0;
+        for (int64_t i = 0; OB_SUCC(ret) && i < visible_count; ++i) {
+          ObColumnSchemaV2 *ai = table_schema.get_column_schema_by_idx(i);
+          if (ai && ai->is_ai_column()) {
+            if (++ai_count > 64) { ret = OB_SIZE_OVERFLOW; break; }
+            std::vector<std::unique_ptr<ObColumnSchemaV2>> hidden;
+            if (OB_FAIL(ai_column::bind(params_, table_schema, *ai))) {
+            } else if (OB_FAIL(ai_column::hidden_columns(*ai, hidden))) {
+            } else {
+              for (auto &hidden_ptr : hidden) {
+                auto &state = *hidden_ptr;
+                if (OB_FAIL(ret)) break;
+                state.set_table_id(table_schema.get_table_id());
+                state.set_prev_column_id(cur_column_id_);
+                state.set_column_id(++cur_column_id_);
+                if (OB_FAIL(table_schema.add_column(state))) {}
+              }
+            }
+          }
+        }
         table_schema.set_max_used_column_id(cur_column_id_);
         if (0 != autoinc_column_id) {
           table_schema.set_autoinc_column_id(autoinc_column_id);

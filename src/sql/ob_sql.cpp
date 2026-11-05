@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL
+#include "sql/ai_column/ai_column_runtime.h"
 #include "config_bridge.h"
 #include "sql/ob_sql.h"
 #include "lib/json/ob_json_print_utils.h"
@@ -2265,7 +2266,10 @@ int ObSql::generate_physical_plan(ParseResult &parse_result,
                                    outline_parse_result))) {
   } else if (OB_ISNULL(basic_stmt)) {
     ret = OB_ERR_UNEXPECTED;
-    // begin/commit statement does not need to check privilege
+  } else if (basic_stmt->is_dml_stmt() && !sql_ctx.session_info_->is_ai_column_internal_write()
+             && OB_FAIL(ai_column::capture_read_columns(*static_cast<ObDMLStmt *>(basic_stmt),
+                                                       *sql_ctx.schema_guard_,allocator))) {
+    // Capture user references before transformations can prune expressions.
   } else if (!is_begin_commit_stmt
           && OB_FAIL(ObPrivilegeCheck::check_privilege_new(sql_ctx,
                                                            basic_stmt,
@@ -2763,6 +2767,7 @@ int ObSql::code_generate(
   //add local_session_var array to phy_plan_ctx
   if (OB_SUCC(ret)) {
     if (OB_FAIL(phy_plan->set_all_local_session_vars(sql_ctx.all_local_session_vars_))) {
+    } else if (OB_FAIL(phy_plan->set_ai_column_read_spec(stmt->get_query_ctx()->ai_column_read_spec_))) {
     }
   }
   NG_TRACE(cg_end);
@@ -2771,7 +2776,10 @@ int ObSql::code_generate(
   if (OB_SUCC(ret)) {
     const ObPlanCachePolicy plan_cache_policy = phy_plan->get_phy_plan_hint().plan_cache_policy_;
     ObPhyPlanHint phy_hint(logical_plan->get_optimizer_context().get_global_hint());
-    if (OB_USE_PLAN_CACHE_NONE == plan_cache_policy) {
+    // Maintenance resolves hidden columns and bypasses AI result write checks.
+    // Such plans must never be reused by ordinary business statements.
+    if (OB_USE_PLAN_CACHE_NONE == plan_cache_policy
+        || sql_ctx.session_info_->is_ai_column_internal_write()) {
       phy_hint.plan_cache_policy_ = OB_USE_PLAN_CACHE_NONE;
     }
     // set larger query_time for IS

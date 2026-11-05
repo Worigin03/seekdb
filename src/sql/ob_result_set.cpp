@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL
+#include "sql/ai_column/ai_column_runtime.h"
 #include "ob_result_set.h"
 #include "data_plane/transaction/ob_tx_desc_access.h"
 #include "share/rc/ob_server_runtime.h"
@@ -171,6 +172,8 @@ int ObResultSet::open()
   LinkExecCtxGuard link_guard(my_session_, get_exec_context());
   ObTraceSpanGuard open_span(&my_session_, TRACE_OPEN);
   if (OB_FAIL(execute())) {
+  } else if (get_physical_plan() && OB_FAIL(ai_column::check_strict_read(get_exec_context(), *get_physical_plan()))) {
+    set_errcode(ret);
   } else if (OB_FAIL(open_result())) {
   }
 
@@ -722,6 +725,9 @@ OB_INLINE int ObResultSet::do_close_plan(int errcode, ObExecContext &ctx)
       LOG_ERROR("plan is not NULL, but plan ctx is NULL", K(ret), K(errcode));
     } else {
       err_ignored = plan_ctx->is_error_ignored();
+    }
+    if (OB_SUCC(ret) && OB_SUCCESS == pret && (errcode == OB_SUCCESS || errcode == OB_ITER_END)) {
+      ret = ai_column::after_dml(ctx, *physical_plan_);
     }
     bool rollback = need_rollback(ret, errcode, err_ignored);
     get_exec_context().set_errcode(errcode);

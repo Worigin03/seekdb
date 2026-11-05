@@ -212,6 +212,9 @@ int assign(const ObColumnSchemaV2 &src_schema);
   inline const common::ObString &get_column_name_str() const { return column_name_; }
   inline const char *get_comment() const {return extract_str(comment_);}
   inline const common::ObString &get_comment_str() const { return comment_; }
+  bool is_ai_column() const { return !ai_column_info_.empty(); }
+  const common::ObString &get_ai_column_info_str() const { return ai_column_info_; }
+  int set_ai_column_info(const common::ObString &info) { return deep_copy_str(info, ai_column_info_); }
   inline const common::ObIArray<common::ObString> &get_extended_type_info() const { return extended_type_info_; }
   inline common::ObIArray<common::ObString> &get_extended_type_info() { return extended_type_info_; }
   inline uint64_t get_prev_column_id() const { return prev_column_id_; }
@@ -398,6 +401,9 @@ private:
   ObSkipIndexColumnAttr skip_index_attr_;
   int64_t lob_chunk_size_;
   share::ObLocalSessionVar local_session_vars_;
+  // Versioned AI definition, including dependency IDs and hidden state columns.
+  // Kept separate from comments and generated-column default expressions.
+  common::ObString ai_column_info_;
 };
 
 inline int32_t ObColumnSchemaV2::get_data_length() const

@@ -184,6 +184,11 @@ class ObSQLSessionInfo: public common::ObVersionProvider, public ObBasicSessionI
 {
   OB_UNIS_VERSION(1);
 public:
+  bool is_ai_column_internal_write() const { return ai_column_internal_write_; }
+  void set_ai_column_internal_write(bool value) { ai_column_internal_write_ = value; }
+private:
+  bool ai_column_internal_write_ = false;
+public:
   friend class LinkExecCtxGuard;
   // notice!!! register exec ctx to session for later access
   // used for temp session, such as session for rpc processor, px worker, das processor, etc

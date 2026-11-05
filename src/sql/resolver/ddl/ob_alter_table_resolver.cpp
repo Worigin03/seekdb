@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/ai_column/ai_column_definition.h"
 #include "config_bridge.h"
 #include "sql/resolver/ddl/ob_alter_table_resolver.h"
 #include "sql/resolver/expr/ob_raw_expr_part_expr_checker.h"
@@ -3453,10 +3454,29 @@ int ObAlterTableResolver::resolve_add_column(const ParseNode &node, ObColumnName
           }
         }
 
+        // Bind the asynchronous expression without evaluating its model call.
+        std::vector<std::unique_ptr<ObColumnSchemaV2>> ai_hidden;
+        if (OB_SUCC(ret) && alter_column_schema.is_ai_column()) {
+          ObTableSchema binding_schema;
+          if (OB_FAIL(binding_schema.assign(*table_schema_))) {
+          } else if (OB_FAIL(ai_column::bind(params_, binding_schema, alter_column_schema))) {
+          } else if (OB_FAIL(ai_column::hidden_columns(alter_column_schema, ai_hidden))) {}
+        }
         //add column
         if (OB_SUCC(ret)) {
           if (OB_FAIL(alter_table_stmt->add_column(alter_column_schema))) {
           } else if (FALSE_IT(alter_table_stmt->set_sql_mode(session_info_->get_sql_mode()))) {
+          }
+          for (const auto &hidden_ptr : ai_hidden) {
+            const auto &hidden = *hidden_ptr;
+            if (OB_FAIL(ret)) break;
+            AlterColumnSchema state;
+            if (OB_FAIL(state.ObColumnSchemaV2::assign(hidden))) {
+            } else {
+              state.alter_type_ = OB_DDL_ADD_COLUMN;
+              state.is_set_default_ = true;
+              ret = alter_table_stmt->add_column(state);
+            }
           }
         }
       }
@@ -4069,6 +4089,21 @@ int ObAlterTableResolver::resolve_modify_column(const ParseNode &node,
         }
       }
 
+      if (OB_SUCC(ret) && alter_column_schema.is_ai_column()) {
+        ObTableSchema binding_schema;
+        if (OB_FAIL(binding_schema.assign(*table_schema_))) {
+        } else if (OB_FAIL(ai_column::bind(params_, binding_schema, alter_column_schema))) {
+        }
+      } else if (OB_SUCC(ret) && origin_col_schema && origin_col_schema->is_ai_column()) {
+        // A type-only MODIFY keeps the asynchronous generation rule.
+        if (OB_FAIL(alter_column_schema.set_ai_column_info(origin_col_schema->get_ai_column_info_str()))) {
+        } else {
+          ObTableSchema binding_schema;
+          if (OB_FAIL(binding_schema.assign(*table_schema_))) {
+          } else if (OB_FAIL(ai_column::bind(params_, binding_schema, alter_column_schema))) {
+          }
+        }
+      }
       if (OB_SUCC(ret)) {
         if (OB_FAIL(check_modify_column_allowed(alter_column_schema,
                                                 *origin_col_schema, stat))) {
@@ -4079,6 +4114,20 @@ int ObAlterTableResolver::resolve_modify_column(const ParseNode &node,
         }
         if (OB_SUCC(ret)) {
           if (OB_FAIL(alter_table_stmt->add_column(alter_column_schema))) {
+          }
+          if (OB_SUCC(ret) && alter_column_schema.is_ai_column() && !origin_col_schema->is_ai_column()) {
+            std::vector<std::unique_ptr<ObColumnSchemaV2>> hidden;
+            if (OB_FAIL(ai_column::hidden_columns(alter_column_schema, hidden))) {
+            } else for (const auto &column : hidden) {
+              if (OB_FAIL(ret)) break;
+              AlterColumnSchema state;
+              if (OB_FAIL(state.ObColumnSchemaV2::assign(*column))) {
+              } else {
+                state.alter_type_ = OB_DDL_ADD_COLUMN;
+                state.is_set_default_ = true;
+                ret = alter_table_stmt->add_column(state);
+              }
+            }
           }
         }
         if (OB_SUCC(ret)) {

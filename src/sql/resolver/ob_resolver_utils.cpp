@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/engine/basic/file_scan_utils.h"
 
 #include "config_bridge.h"
 #include "share/config/ob_config_helper.h"
@@ -122,6 +123,23 @@ int ObResolverUtils::get_all_function_table_column_names(const TableItem &table_
 {
   int ret = OB_SUCCESS;
   ObRawExpr *table_expr = NULL;
+  if (table_item.function_table_expr_ && table_item.function_table_expr_->is_const_expr()
+      && table_item.function_table_expr_->get_data_type() == ObVarcharType) {
+    try {
+      const ObObj &value = static_cast<const ObConstRawExpr *>(table_item.function_table_expr_)->get_value();
+      if (!value.is_varchar()) return OB_NOT_SUPPORTED;
+      const ObString encoded = value.get_string();
+      const auto definition = file_sql::FileReader::decode(std::string(encoded.ptr(),encoded.length()));
+      for (const auto &column : definition.columns) {
+        ObString owned;
+        const ObString name(column.name.size(),column.name.data());
+        if (OB_FAIL(ob_write_string(*params.allocator_,name,owned))) break;
+        if (OB_FAIL(column_names.push_back(owned))) break;
+      }
+    } catch (const std::bad_alloc &) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+      catch (const file_sql::FileError &) { ret = OB_INVALID_ARGUMENT; }
+    return ret;
+  }
   ObPLPackageGuard *package_guard = nullptr;
   const ObUserDefinedType *user_type = NULL;
   ObExecContext *exec_ctx = params.session_info_->get_cur_exec_ctx();
@@ -1678,6 +1696,8 @@ stmt::StmtType ObResolverUtils::get_stmt_type_by_item_type(const ObItemType item
     type = stmt::item_type;      \
   } break;
       // dml
+      case T_COPY_FILE: case T_SHOW_AI_COLUMNS: type = stmt::T_SELECT; break;
+      case T_AI_COLUMN_RETRY: type = stmt::T_UPDATE; break;
       SET_STMT_TYPE(T_SELECT);
       SET_STMT_TYPE(T_INSERT);
       SET_STMT_TYPE(T_DELETE);

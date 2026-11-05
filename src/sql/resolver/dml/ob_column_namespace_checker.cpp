@@ -268,6 +268,12 @@ int ObColumnNamespaceChecker::check_column_exists(const TableItem &table_item, c
     if (0 == col_name.case_compare("ORA_ROWSCN")) {
       //only basic table has ora_rowscn
       is_exist = true;
+    } else if (params_.session_info_->is_ai_column_internal_write()) {
+      const ObTableSchema *schema = nullptr;
+      if (OB_FAIL(params_.schema_checker_->get_table_schema(table_id, schema))) {
+      } else if (schema) {
+        is_exist = schema->get_column_schema(col_name) != nullptr;
+      }
     } else if (OB_FAIL(params_.schema_checker_->check_column_exists(table_id,
                                                                     col_name,
                                                                     is_exist))) {

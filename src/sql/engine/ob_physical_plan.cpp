@@ -184,6 +184,7 @@ void ObPhysicalPlan::reset()
   subschema_ctx_.reset();
   das_dop_ = 0;
   all_local_session_vars_.reset();
+  ai_column_read_spec_.reset();
   sql_stat_record_value_.reset();
   udf_has_dml_stmt_ = false;
   is_inner_sql_ = false;
@@ -649,7 +650,8 @@ OB_SERIALIZE_MEMBER(ObPhysicalPlan,
                     need_switch_to_table_lock_worker_,
                     data_complement_gen_doc_id_,
                     px_parallel_rule_,
-                    px_worker_share_plan_enabled_);
+                    px_worker_share_plan_enabled_,
+                    ai_column_read_spec_);
 
 int ObPhysicalPlan::set_table_locations(const ObTablePartitionInfoArray &infos,
                                         ObSchemaGetterGuard &schema_guard)

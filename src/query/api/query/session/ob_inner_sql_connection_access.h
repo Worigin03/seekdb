@@ -51,6 +51,9 @@ namespace query
 class ObInnerSQLConnectionAccess
 {
 public:
+  static int create_connection_with_owned_session(
+      common::sqlclient::ObISQLConnectionGuard &connection);
+
   static int create_connection_with_external_session(
       sql::ObSQLSessionInfo *session,
       common::sqlclient::ObISQLConnectionGuard &connection);

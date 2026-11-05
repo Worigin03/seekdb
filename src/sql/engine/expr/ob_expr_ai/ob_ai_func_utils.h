@@ -328,6 +328,8 @@ public:
                                  const share::ObAiModelEndpointInfo &endpoint_info,
                                  ObJsonObject *http_response,
                                  ObIJsonBase *&result);
+  static int validate_rerank_output(ObIAllocator &allocator, ObIJsonBase *response,
+                                    int64_t document_count, ObJsonArray *&result);
   static int set_string_result(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res, ObString &res_str);
   static bool is_provider_support_base64(const ObString &provider);
   static int decode_base64_embedding_array(const ObIJsonBase &embedding_jbase, ObIAllocator &allocator,
@@ -345,14 +347,17 @@ private:
 class ObAIFuncModel
 {
 public:
-  ObAIFuncModel(ObIAllocator &allocator, const ObAIFuncExprInfo &info, const share::ObAiModelEndpointInfo &endpoint_info)
+  ObAIFuncModel(ObIAllocator &allocator, const ObAIFuncExprInfo &info,
+               const share::ObAiModelEndpointInfo &endpoint_info, bool retry_http = true)
   : allocator_(&allocator),
     info_(info),
-    endpoint_info_(endpoint_info)
+    endpoint_info_(endpoint_info),
+    retry_http_(retry_http)
   {}
    virtual ~ObAIFuncModel() {}
    // completion
-   int call_completion(ObString &prompt, ObJsonObject *config, ObString &result);
+   int call_completion(ObString &prompt, ObJsonObject *config, ObString &result,
+                       const ObString &system_prompt = ObString());
    int call_completion_vector(ObArray<ObString> &prompts, ObJsonObject *config, ObArray<ObString> &results);
    // dense_embedding
    int call_dense_embedding(ObString &content, ObJsonObject *config, ObString &result);
@@ -368,6 +373,7 @@ public:
    ObIAllocator *allocator_;
    const ObAIFuncExprInfo &info_;
    const share::ObAiModelEndpointInfo &endpoint_info_;
+   bool retry_http_;
    DISALLOW_COPY_AND_ASSIGN(ObAIFuncModel);
 };
 

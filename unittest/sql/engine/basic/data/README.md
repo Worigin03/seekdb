@@ -1,0 +1,1 @@
+Parquet fixtures generated with PyArrow 12.0.1 using Snappy, three row groups, nullable INT64/UTF8/DOUBLE/BOOLEAN columns, PLAIN or dictionary encoding, and V1 or V2 data pages. PyArrow is only a fixture generator and is not a runtime dependency.

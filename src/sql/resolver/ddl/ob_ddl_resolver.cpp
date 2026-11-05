@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SQL_RESV
 #include "config_bridge.h"
 #include "ob_ddl_resolver.h"
+#include "sql/ai_column/ai_column_definition.h"
 #include "data_plane/blocksstable/ob_index_block_util.h"
 #include "sql/resolver/dml/ob_dml_resolver.h"
 #include "sql/resolver/ddl/ob_index_builder_util.h"
@@ -2163,6 +2164,9 @@ int ObDDLResolver::resolve_normal_column_attribute(ObColumnSchemaV2 &column,
           column.set_autoincrement(true);
           resolve_stat.is_autoincrement_ = true;
         }
+        break;
+      case T_AI_COLUMN:
+        ret = ai_column::capture(column, *attr_node);
         break;
       case T_COMMENT:{
         if (attr_node->num_child_ != 1

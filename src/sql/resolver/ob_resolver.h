@@ -42,6 +42,9 @@ public:
   ObResolverParams &get_params() { return params_; }
 
 private:
+  int resolve_file_description(const ParseNode &select, ObStmt *&stmt);
+  int resolve_file_copy(const ParseNode &copy, ObStmt *&stmt);
+  int resolve_ai_column_statement(const ParseNode &node, ObStmt *&stmt);
   template <typename ResolverType>
   int stmt_resolver_func(ObResolverParams &params, const ParseNode &parse_tree, ObStmt *&stmt);
 

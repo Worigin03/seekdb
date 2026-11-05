@@ -205,6 +205,8 @@ public:
   int resolve_joined_table_item(const ParseNode &parse_node, JoinedTable *&joined_table);
   int resolve_function_table_item(const ParseNode &table_node,
                                   TableItem *&table_item);
+  int resolve_file_table_item(const ParseNode &table_node, TableItem *&table_item);
+  int resolve_file_table_columns(const TableItem &table_item, common::ObIArray<ColumnItem> &columns);
   int resolve_json_table_item(const ParseNode &table_node,
                               TableItem *&table_item);
   int resolve_unnest_item(const ParseNode &table_node, TableItem *&table_item);
@@ -487,6 +489,7 @@ protected:
   int generate_ddl_sample_info_if_needed(TableItem &table_item);
 
 protected:
+  int check_ai_column_write(const ObColumnRefRawExpr *column);
   int check_basic_column_generated(const ObColumnRefRawExpr *col_expr,
                                   ObDMLStmt *dml_stmt,
                                   bool &is_generated);

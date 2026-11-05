@@ -34,6 +34,7 @@ public:
   void clean_up();
   void reset();
   void set_timeout_sec(int64_t timeout_sec) { timeout_sec_ = timeout_sec; }
+  void disable_post_retries() { max_retry_times_ = 0; }
   // ai function interface
   virtual int send_post(common::ObIAllocator &allocator, 
                         const ObString &url,

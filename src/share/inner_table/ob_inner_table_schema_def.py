@@ -342,7 +342,8 @@ all_column_def = dict(
       ('sub_data_type', 'int', 'false', '0'),
       ('skip_index_attr', 'int', 'false', '0'),
       ('lob_chunk_size', 'int', 'false', 'OB_DEFAULT_LOB_CHUNK_SIZE'),
-      ('local_session_vars', 'longtext', 'true')
+      ('local_session_vars', 'longtext', 'true'),
+      ('ai_column_info', 'longtext', 'true')
   ]
   )
 
@@ -2466,6 +2467,25 @@ all_objauth_mysql_def = dict(
   )
 def_table_schema(**all_objauth_mysql_def)
 def_table_schema(**gen_history_table_def(1134, all_objauth_mysql_def))
+
+# Each task is part of its originating business transaction. Workers only see
+# committed rows; task identity includes the request and business row identity.
+def_table_schema(
+    owner = 'database-competition', table_name = '__all_ai_column_task', table_id = '1191',
+    table_type = 'SYSTEM_TABLE', gm_columns = ['gmt_create', 'gmt_modified'],
+    rowkey_columns = [('table_id', 'int'), ('column_id', 'int'),
+                      ('rowkey_hash', 'varchar:64'), ('request_id', 'varchar:64')],
+    normal_columns = [
+      ('rowkey_predicate', 'longtext', 'false'),
+      ('definition_version', 'int', 'false'),
+      ('state', 'int', 'false', '0'), ('retry_count', 'int', 'false', '0'),
+      ('eligible_ts', 'timestamp:6', 'false'),
+      ('lease_owner', 'varchar:64', 'true'), ('lease_expire', 'timestamp:6', 'true'),
+      ('input', 'longtext', 'true'), ('config', 'longtext', 'true'),
+      ('result', 'longtext', 'true'), ('last_error', 'longtext', 'true')
+    ])
+
+
 
 
 # Reserved position (placeholder before this line)
@@ -13909,6 +13929,33 @@ def_table_schema(
 # Reserved position (placeholder before this line)
 # Placeholder suggestion for this section: Use the actual view name for placeholder
 ################################################################################
+# AI definitions live on the column schema so CREATE/DROP and schema copies
+# retain one atomic source of truth. Resolve hidden IDs by their stable names.
+def_table_schema(
+    owner = 'database-competition', table_name = '__all_ai_column',
+    table_id = '29000', table_type = 'SYSTEM_VIEW', gm_columns = [], rowkey_columns = [],
+    normal_columns = [],
+    view_definition = """
+      SELECT c.table_id, c.column_id, c.column_name,
+        JSON_UNQUOTE(JSON_EXTRACT(NULLIF(c.ai_column_info, ''), '$.expression')) AS expression,
+        JSON_UNQUOTE(JSON_EXTRACT(NULLIF(c.ai_column_info, ''), '$.normalized_expr')) AS normalized_expr,
+        JSON_UNQUOTE(JSON_EXTRACT(NULLIF(c.ai_column_info, ''), '$.dependencies')) AS dependencies,
+        'async' AS sync_mode,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(NULLIF(c.ai_column_info, ''), '$.max_retries')) AS SIGNED) AS max_retries,
+        c.schema_version AS definition_version,
+        s.column_id AS state_column_id, r.column_id AS request_column_id,
+        v.column_id AS result_spec_column_id
+      FROM oceanbase.__all_column c
+      JOIN oceanbase.__all_column s ON s.table_id=c.table_id
+        AND s.column_name=JSON_UNQUOTE(JSON_EXTRACT(NULLIF(c.ai_column_info, ''), '$.state_column'))
+      JOIN oceanbase.__all_column r ON r.table_id=c.table_id
+        AND r.column_name=JSON_UNQUOTE(JSON_EXTRACT(NULLIF(c.ai_column_info, ''), '$.request_column'))
+      JOIN oceanbase.__all_column v ON v.table_id=c.table_id
+        AND v.column_name=JSON_UNQUOTE(JSON_EXTRACT(NULLIF(c.ai_column_info, ''), '$.result_spec_column'))
+      WHERE c.ai_column_info IS NOT NULL AND c.ai_column_info != ''
+    """.replace("\n", " ")
+)
+
 #### End of Performance View (28000, 30000]
 ################################################################################
 ################################### Placeholder Notice ###################################

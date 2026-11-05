@@ -363,6 +363,8 @@ public:
   int get_all_spec_op(ObIArray<const ObOpSpec *> &simple_op_infos, const ObOpSpec &root_op_spec);
   ObSubSchemaCtx &get_subschema_ctx_for_update() { return subschema_ctx_; }
   const ObSubSchemaCtx &get_subschema_ctx() const { return subschema_ctx_; }
+  int set_ai_column_read_spec(const common::ObString &value) { return common::ob_write_string(allocator_,value,ai_column_read_spec_); }
+  const common::ObString &get_ai_column_read_spec() const { return ai_column_read_spec_; }
   int set_all_local_session_vars(ObIArray<ObLocalSessionVar> *all_local_session_vars);
   ObIArray<ObLocalSessionVar> & get_all_local_session_vars() { return all_local_session_vars_; }
   inline bool get_insertup_can_do_gts_opt() const {return insertup_can_do_gts_opt_; }
@@ -519,6 +521,7 @@ public:
   bool is_batch_params_execute_;
 private:
   common::ObFixedArray<ObLocalSessionVar, common::ObIAllocator> all_local_session_vars_;
+  common::ObString ai_column_read_spec_;
 public:
   bool udf_has_dml_stmt_;
 private:
