@@ -78,7 +78,11 @@ public:
 
   int init();
   void destroy();
-  int check_stopword(const ObFTWord &word, bool &is_stopword);
+  // The caller supplies the scratch allocator so that a lookup that hits the
+  // fast path (identical charset) does not have to build its own arena per word.
+  int check_stopword(const ObFTWord &word,
+                     common::ObIAllocator &allocator,
+                     bool &is_stopword);
 
 private:
   static const int64_t DEFAULT_STOPWORD_BUCKET_NUM = 37L;

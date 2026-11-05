@@ -1017,7 +1017,16 @@ int ObFTParserProperty::parse_for_parser_helper(const ObFTParser &parser, const 
 {
   int ret = OB_SUCCESS;
   ObFTParserJsonProps props;
-  if (OB_FAIL(props.init())) {
+  if (json_str.empty()) {
+    // No parser properties were supplied: every option keeps the value set by
+    // the constructor, so skip building an empty JSON document. IK only has to
+    // remember the built-in dictionary table names.
+    if (parser.is_ik()) {
+      dict_table_ = ObString(ObFTSLiteral::CONFIG_NAME_DICT_TABLE);
+      stopword_table_ = ObString(ObFTSLiteral::CONFIG_NAME_STOPWORD_TABLE);
+      quantifier_table_ = ObString(ObFTSLiteral::CONFIG_NAME_QUANTIFIER_TABLE);
+    }
+  } else if (OB_FAIL(props.init())) {
   } else if (OB_FAIL(props.parse_from_valid_str(json_str))) {
   } else {
     if (parser.is_ik()) {

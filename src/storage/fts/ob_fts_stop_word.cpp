@@ -71,27 +71,35 @@ void ObStopWordChecker::destroy()
   }
 }
 
-int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
+int ObStopWordChecker::check_stopword(const ObFTWord &word,
+                                     common::ObIAllocator &allocator,
+                                     bool &is_stopword)
 {
   int ret = OB_SUCCESS;
-  
-  
-  common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
   if (OB_UNLIKELY(!inited_)) {
     ret = OB_NOT_INIT;
   } else if (OB_UNLIKELY(word.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else {
-    common::ObString cmp_str;
-    // do nothing set out with in if type is the same.
-    if (OB_FAIL(common::ObCharset::charset_convert(
-                                       allocator,
-                                       word.get_word().get_string(),
-                                       word.get_collation_type(),
-                                       stopword_type_.get_collation_type(),
-                                       cmp_str))) {
+    const common::ObString word_str = word.get_word().get_string();
+    ObFTWord converted;
+    // Converting between two collations of the same charset is a byte-wise copy,
+    // so the fast path can look the word up directly with the stopword meta.
+    if (common::ObCharset::charset_type_by_coll(word.get_collation_type())
+        == common::ObCharset::charset_type_by_coll(stopword_type_.get_collation_type())) {
+      converted = ObFTWord(word_str.length(), word_str.ptr(), stopword_type_);
     } else {
-      ObFTWord converted(cmp_str.length(), cmp_str.ptr(), stopword_type_);
+      common::ObString cmp_str;
+      if (OB_FAIL(common::ObCharset::charset_convert(allocator,
+                                                     word_str,
+                                                     word.get_collation_type(),
+                                                     stopword_type_.get_collation_type(),
+                                                     cmp_str))) {
+      } else {
+        converted = ObFTWord(cmp_str.length(), cmp_str.ptr(), stopword_type_);
+      }
+    }
+    if (OB_SUCC(ret)) {
       ret = stopword_set_.exist_refactored(converted);
       if (OB_HASH_NOT_EXIST == ret) {
         is_stopword = false;
@@ -189,7 +197,7 @@ int ObAddWord::check_stopword(const ObFTWord &ft_word, bool &is_stopword)
     ObStopWordChecker *stop_word_checker = ObFTParseData::instance().stop_word_checker();
     if (OB_ISNULL(stop_word_checker)) {
       ret = OB_ERR_UNEXPECTED;
-    } else if (OB_FAIL(stop_word_checker->check_stopword(ft_word, is_stopword))) {
+    } else if (OB_FAIL(stop_word_checker->check_stopword(ft_word, allocator_, is_stopword))) {
     }
   }
   return ret;
