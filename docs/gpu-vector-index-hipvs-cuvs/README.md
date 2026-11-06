@@ -10,7 +10,8 @@ history rather than in the product-facing tree.
 The backend adds optional hipVS/cuVS acceleration behind seekdb's existing
 vector adaptor. It does not replace VSAG globally.
 
-- GPU support is compiled only with `OB_BUILD_CUVS=ON`; the default is `OFF`.
+- The default CMake build detects hipVS and ROCm on native Linux x86-64.
+  Use `OB_BUILD_CUVS=ON` to require GPU support or `OFF` for a CPU-only build.
 - A dense L2 HNSW/HGRAPH index opts in with `WITH (lib=cuvs)`.
 - `lib=vsag` indexes keep their existing CPU behavior.
 - Cosine and inner-product metrics are rejected for `lib=cuvs` at DDL time.
@@ -52,7 +53,16 @@ seekdb_cuvs_serialize
 seekdb_cuvs_deserialize
 ```
 
-Build seekdb with the resulting library:
+On an AMD build machine with the hipVS and ROCm SDKs installed, CMake can
+build the bridge as part of the seekdb build.
+
+```bash
+./build.sh release --init -DOB_BUILD_CUVS=ON --make -j8
+```
+
+The SDKs default to `/opt/hipvs` and `/opt/rocm`. Set `HIPVS_ROOT` and
+`ROCM_ROOT` if they are installed elsewhere. To link an existing bridge,
+pass its path explicitly:
 
 ```bash
 ./build.sh release \
@@ -62,7 +72,7 @@ Build seekdb with the resulting library:
   --make -j64
 ```
 
-For a CPU-only build, leave the defaults or pass:
+For a CPU-only build, pass:
 
 ```bash
 ./build.sh release \
@@ -122,16 +132,15 @@ vector-index builds idle while running it so the log window belongs to the
 current test. The generated database remains available for inspection.
 
 The bridge uses CAGRA with graph degree 64, intermediate graph degree 128,
-and 20 NN-Descent iterations. To reproduce the tuned comparison with the
-validation runner's pinned source revision, pass those parameters explicitly.
-The runner builds the bridge, starts an isolated seekdb instance, and writes
-`hnsw-build-results.json` to its artifacts directory.
+and 20 NN-Descent iterations. The validation runner uses the source checkout
+containing the script. Set `BENCH_SOURCE_DIR` to benchmark another local
+checkout or a source archive. The runner builds the bridge, starts an isolated
+seekdb instance, and writes `hnsw-build-results.json` to its artifacts directory.
 
 ```bash
-BENCH_CAGRA_PARAMS=64,128,20 \
-  bash docs/gpu-vector-index-hipvs-cuvs/validation/run_radeon_build_benchmark.sh \
-    docs/gpu-vector-index-hipvs-cuvs/validation/benchmark_hnsw_build.py \
-    --rows 50000 --dim 128 --repeats 3
+bash docs/gpu-vector-index-hipvs-cuvs/validation/run_radeon_build_benchmark.sh \
+  docs/gpu-vector-index-hipvs-cuvs/validation/benchmark_hnsw_build.py \
+  --rows 50000 --dim 128 --repeats 3
 ```
 
 The self-contained GPU smoke runner generates deterministic vectors and ground

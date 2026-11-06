@@ -4,13 +4,18 @@ set -Eeuo pipefail
 benchmark=$(realpath "${1:?path to benchmark_hnsw_build.py required}")
 jobs=${JOBS:-8}
 port=${PORT:-2981}
-revision=634888d9b037153fa143d2c913ba4b25503e1d62
-repo=https://github.com/zihaomu/seekdb.git
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+src=$(realpath "${BENCH_SOURCE_DIR:-$script_dir/../../..}")
 hipvs_root=${HIPVS_ROOT:-/opt/hipvs}
 rocm_root=${ROCM_ROOT:-/opt/rocm}
+hipcc=${HIPCC:-$rocm_root/bin/hipcc}
 mysql_bin=${MYSQL:-mysql}
 
-if [[ ! -f "$benchmark" || ! -x "$rocm_root/bin/hipcc" || ! -f "$hipvs_root/lib/libcuvs_c.so" ]]; then
+if [[ ! -f "$src/build.sh" || ! -f "$src/tools/hipvs_bridge/build.sh" ]]; then
+  echo "Seekdb source not found at $src. Set BENCH_SOURCE_DIR to the checkout to benchmark." >&2
+  exit 2
+fi
+if [[ ! -f "$benchmark" || ! -x "$hipcc" || ! -f "$hipvs_root/lib/libcuvs_c.so" ]]; then
   echo "Missing benchmark, hipcc, or hipVS library. Check $benchmark, $rocm_root and $hipvs_root." >&2
   exit 2
 fi
@@ -37,7 +42,11 @@ if [[ -n "${BENCH_WORK:-}" ]]; then
     exit 2
   fi
 else
-  work=$(mktemp -d "${BENCH_ROOT:-/workspace}/seekdb-hipvs-build.XXXXXX")
+  bench_root=${BENCH_ROOT:-${TMPDIR:-/tmp}}
+  if [[ -z "${BENCH_ROOT:-}" && -d /workspace && -w /workspace ]]; then
+    bench_root=/workspace
+  fi
+  work=$(mktemp -d "$bench_root/seekdb-hipvs-build.XXXXXX")
 fi
 echo "Artifacts: $work"
 if [[ -e "$work/hnsw-build-results.json" ]]; then
@@ -45,47 +54,14 @@ if [[ -e "$work/hnsw-build-results.json" ]]; then
   exit 2
 fi
 
-if [[ -n "${BENCH_SOURCE_DIR:-}" ]]; then
-  src=$(realpath "$BENCH_SOURCE_DIR")
-  if [[ ! -f "$src/build.sh" || ! -f "$src/.radeon-benchmark/source-revision.txt" ]] ||
-     [[ $(cat "$src/.radeon-benchmark/source-revision.txt") != "$revision" ]]; then
-    echo "BENCH_SOURCE_DIR must point to the extracted source bundle for $revision." >&2
-    exit 2
-  fi
-  echo "Using bundled seekdb source $revision"
+if [[ -e "$src/.git" ]]; then
+  revision=$(git -C "$src" rev-parse HEAD)
+elif [[ -f "$src/.radeon-benchmark/source-revision.txt" ]]; then
+  revision=$(cat "$src/.radeon-benchmark/source-revision.txt")
 else
-  src=$work/src
-  git init -q "$src"
-  for attempt in 1 2 3; do
-    if git -C "$src" cat-file -e "$revision^{commit}" 2>/dev/null; then
-      break
-    fi
-    echo "Fetching pinned seekdb commit over HTTP/1.1 ($attempt/3)"
-    if GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 -C "$src" \
-      fetch --depth 1 "$repo" "$revision"; then
-      break
-    fi
-    if [[ "$attempt" != 3 ]]; then
-      sleep "$((attempt * 2))"
-    fi
-  done
-  if git -C "$src" cat-file -e "$revision^{commit}" 2>/dev/null; then
-    git -C "$src" checkout -q --detach "$revision"
-  else
-    archive=$work/seekdb-$revision.tar.gz
-    archive_url=https://codeload.github.com/zihaomu/seekdb/tar.gz/$revision
-    if [[ ! -f "$archive" ]]; then
-      echo "Git transfer failed. Downloading the same commit as a GitHub archive."
-      curl --fail --location --http1.1 --retry 3 --retry-all-errors \
-        --connect-timeout 15 --max-time 240 --output "$archive.part" "$archive_url"
-      tar -tzf "$archive.part" >/dev/null
-      mv "$archive.part" "$archive"
-    fi
-    src=$work/archive-src
-    mkdir -p "$src"
-    tar -xzf "$archive" --strip-components=1 -C "$src"
-  fi
+  revision=unknown
 fi
+echo "Using seekdb source $revision at $src"
 printf '%s\n' "$revision" >"$work/source-revision.txt"
 
 bridge=$work/bridge/libseekdb_cuvs_bridge.so
@@ -117,7 +93,8 @@ print(f"CAGRA parameters: graph={degree}, intermediate={intermediate}, iteration
 PY
   printf '%s\n' "$BENCH_CAGRA_PARAMS" >"$work/cagra-params.txt"
 fi
-HIPVS_ROOT="$hipvs_root" ROCM_ROOT="$rocm_root" bash "$bridge_source/build.sh" "$bridge"
+HIPVS_ROOT="$hipvs_root" ROCM_ROOT="$rocm_root" HIPCC="$hipcc" \
+  bash "$bridge_source/build.sh" "$bridge"
 
 observer=$src/build_release/src/observer/seekdb
 if [[ -n "${BENCH_PREBUILT_OBSERVER:-}" ]]; then

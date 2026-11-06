@@ -12,6 +12,8 @@ project("OceanBase"
   HOMEPAGE_URL "https://www.oceanbase.ai"
   LANGUAGES CXX C ASM)
 
+include(cmake/HipVS.cmake)
+
 option(OB_ENABLE_STANDBY "Build physical standby support" ON)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
