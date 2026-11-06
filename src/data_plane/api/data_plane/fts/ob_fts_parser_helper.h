@@ -176,6 +176,14 @@ public:
       const int64_t fulltext_len,
       int64_t &doc_length,
       ObFTWordMap &words) const;
+  // If input aliasing is enabled, fulltext must outlive the word map's use.
+  int segment(
+      const common::ObObjMeta &meta,
+      const char *fulltext,
+      const int64_t fulltext_len,
+      int64_t &doc_length,
+      ObFTWordMap &words,
+      const bool allow_input_alias) const;
   int check_is_the_same(
       const common::ObString &parser_name,
       const common::ObString &parser_properties,

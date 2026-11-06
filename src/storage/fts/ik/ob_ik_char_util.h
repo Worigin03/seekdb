@@ -289,7 +289,15 @@ inline int ObFTCharUtil::do_classify(const char *input, const uint8_t char_len, 
   ob_wc_t unicode = 0;
   type = CharType::USELESS;
 
-  if (OB_FAIL(decode_unicode<CS_TYPE>(input, char_len, unicode))) {
+  if (CS_TYPE == CHARSET_UTF8MB4 && 1 == char_len
+      && static_cast<unsigned char>(*input) < 0x80) {
+    const unsigned char c = static_cast<unsigned char>(*input);
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+      type = CharType::ENGLISH_LETTER;
+    } else if (c >= '0' && c <= '9') {
+      type = CharType::ARABIC_LETTER;
+    }
+  } else if (OB_FAIL(decode_unicode<CS_TYPE>(input, char_len, unicode))) {
   } else if (ObUnicodeBlockUtils::is_alpha(unicode)) {
     type = CharType::ENGLISH_LETTER;
   } else if (ObUnicodeBlockUtils::is_arabic(unicode)) {

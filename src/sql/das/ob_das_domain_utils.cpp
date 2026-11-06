@@ -346,6 +346,7 @@ int ObDASDomainUtils::build_ft_doc_word_infos(
   void *rows_buf = nullptr;
   blocksstable::ObDatumRow *rows = nullptr;
   if (OB_FAIL(collect_fulltext_words(helper, ft_obj_meta, fulltext, ft_word_map, doc_length))) {
+  } else if (OB_FAIL(word_rows.reserve(ft_word_map.size()))) {
   } else if (OB_ISNULL(rows_buf = reinterpret_cast<char *>(
                            allocator.alloc(ft_word_map.size() * sizeof(blocksstable::ObDatumRow))))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;

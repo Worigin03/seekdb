@@ -8,6 +8,9 @@ TOKENIZE('研究生命起源 ＡＢＣ１２３ 三千六百五十天 한글 し
 SELECT TOKENIZE('研究生命起源 研究生 人工智能', 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]');
 TOKENIZE('研究生命起源 研究生 人工智能', 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]')
 {"tokens": [{"人工": 1}, {"研究生": 2}, {"研究": 2}, {"起源": 1}, {"人工智能": 1}, {"智能": 1}, {"生": 1}, {"生命": 1}], "doc_len": 10}
+SELECT TOKENIZE('数据库 OceanBase ÉTÉ ＡＢＣ 中文', 'ik', '[{"output":"all"}]');
+TOKENIZE('数据库 OceanBase ÉTÉ ＡＢＣ 中文', 'ik', '[{"output":"all"}]')
+{"tokens": [{"oceanbase": 1}, {"t": 1}, {"数据库": 1}, {"中文": 1}, {"ａｂｃ": 1}], "doc_len": 5}
 SELECT TOKENIZE('THE Database, database and audit; A+B Café ÉTÉ. 中文', 'beng', '[{"output":"all"}]');
 TOKENIZE('THE Database, database and audit; A+B Café ÉTÉ. 中文', 'beng', '[{"output":"all"}]')
 {"tokens": [{"café": 1}, {"audit": 1}, {"database": 2}, {"中文": 1}, {"and": 1}, {"été": 1}], "doc_len": 7}
@@ -79,4 +82,20 @@ UPDATE archived_docs SET body = 'database' WHERE id = 'archived';
 SELECT COUNT(*) FROM archived_docs WHERE MATCH(body) AGAINST('rareterm');
 COUNT(*)
 0
+CREATE TABLE multi_batch_docs (id INT PRIMARY KEY, body VARCHAR(80)) DEFAULT CHARSET utf8mb4;
+INSERT INTO multi_batch_docs
+WITH RECURSIVE digits(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM digits WHERE n < 9)
+SELECT id, CASE WHEN MOD(id, 5) = 0 THEN 'database performance'
+                WHEN MOD(id, 3) = 0 THEN 'performance audit'
+                ELSE 'unrelated text' END
+FROM (SELECT a.n + 10 * b.n + 100 * c.n + 1000 * d.n AS id
+FROM digits a, digits b, digits c, digits d) AS ids;
+ALTER TABLE multi_batch_docs ADD FULLTEXT INDEX idx_body(body) WITH PARSER beng;
+SELECT COUNT(*) FROM multi_batch_docs WHERE MATCH(body) AGAINST('database performance audit');
+COUNT(*)
+4667
+SELECT COUNT(*) FROM (SELECT id FROM multi_batch_docs WHERE MATCH(body) AGAINST('database performance audit')
+LIMIT 800 OFFSET 4500) AS limited;
+COUNT(*)
+167
 DROP DATABASE fts_parser_and_limit;

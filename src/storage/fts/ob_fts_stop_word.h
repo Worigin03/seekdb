@@ -105,7 +105,8 @@ public:
       const ObObjMeta &meta,
       const ObAddWordFlag &flag,
       common::ObIAllocator &allocator,
-      ObFTWordMap &word_map);
+      ObFTWordMap &word_map,
+      const ObString &borrowable_input);
   ~ObAddWord() = default;
   int process_word(
       const char *word,
@@ -137,6 +138,7 @@ private:
   int64_t min_token_size_;
   int64_t max_token_size_;
   ObAddWordFlag flag_;
+  ObString borrowable_input_;
 };
 
 } // end namespace storage

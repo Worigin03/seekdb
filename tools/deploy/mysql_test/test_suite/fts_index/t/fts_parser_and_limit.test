@@ -7,6 +7,7 @@ SET NAMES utf8mb4;
 
 SELECT TOKENIZE('研究生命起源 ＡＢＣ１２３ 三千六百五十天 한글 しんぶん 🚀', 'ik', '[{"output":"all"}]');
 SELECT TOKENIZE('研究生命起源 研究生 人工智能', 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]');
+SELECT TOKENIZE('数据库 OceanBase ÉTÉ ＡＢＣ 中文', 'ik', '[{"output":"all"}]');
 SELECT TOKENIZE('THE Database, database and audit; A+B Café ÉTÉ. 中文', 'beng', '[{"output":"all"}]');
 
 SET NAMES utf8mb4 COLLATE utf8mb4_general_ci;
@@ -45,4 +46,17 @@ ALTER TABLE archived_docs ADD FULLTEXT INDEX idx_body(body) WITH PARSER beng;
 SELECT id FROM archived_docs WHERE MATCH(body) AGAINST('+database +rareterm' IN BOOLEAN MODE) ORDER BY id;
 UPDATE archived_docs SET body = 'database' WHERE id = 'archived';
 SELECT COUNT(*) FROM archived_docs WHERE MATCH(body) AGAINST('rareterm');
+CREATE TABLE multi_batch_docs (id INT PRIMARY KEY, body VARCHAR(80)) DEFAULT CHARSET utf8mb4;
+INSERT INTO multi_batch_docs
+WITH RECURSIVE digits(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM digits WHERE n < 9)
+SELECT id, CASE WHEN MOD(id, 5) = 0 THEN 'database performance'
+                WHEN MOD(id, 3) = 0 THEN 'performance audit'
+                ELSE 'unrelated text' END
+FROM (SELECT a.n + 10 * b.n + 100 * c.n + 1000 * d.n AS id
+      FROM digits a, digits b, digits c, digits d) AS ids;
+ALTER TABLE multi_batch_docs ADD FULLTEXT INDEX idx_body(body) WITH PARSER beng;
+SELECT COUNT(*) FROM multi_batch_docs WHERE MATCH(body) AGAINST('database performance audit');
+SELECT COUNT(*) FROM (SELECT id FROM multi_batch_docs WHERE MATCH(body) AGAINST('database performance audit')
+                      LIMIT 800 OFFSET 4500) AS limited;
+
 DROP DATABASE fts_parser_and_limit;

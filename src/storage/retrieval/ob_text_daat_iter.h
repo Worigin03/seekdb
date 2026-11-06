@@ -64,12 +64,16 @@ public:
   virtual void reset() override;
 protected:
   virtual int pre_process() override;
+  int merge_next_rows(const int64_t capacity, int64_t &count) override;
   int do_one_merge_round(int64_t &count) override;
+  int project_results(const int64_t count) override;
+  int advance_small_union_heads();
 protected:
   ObBM25ParamEstimator bm25_param_estimator_;
   sql::ObMatchAgainstMode mode_flag_;
   bool function_lookup_mode_;
   bool use_small_union_;
+  ObFixedArray<uint64_t, ObIAllocator> small_union_ids_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObTextDaaTIter);
 };

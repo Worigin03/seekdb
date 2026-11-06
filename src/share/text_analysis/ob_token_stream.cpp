@@ -142,7 +142,8 @@ bool ObTextWhitespaceTokenizer::found_delimiter()
 {
   bool found = false;
   const char *curr_char = input_doc_->ptr_ + trav_pos_;
-  found = ob_isspace(cs_, *curr_char) || ob_iscntrl(cs_, *curr_char) || ob_ispunct(cs_, *curr_char);
+  found = cs_->ctype != NULL
+      && (((cs_->ctype + 1)[static_cast<unsigned char>(*curr_char)] & (_MY_SPC | _MY_CTR | _MY_PNT)) != 0);
   return found;
 }
 
@@ -214,7 +215,8 @@ int ObTokenStopWordNormalizer::filter_special_marks(const ObDatum &check_token, 
   int64_t special_mark_cnt = 0;
   for (int64_t i = 0; i < token_len; ++i) {
     const char *character = token + i;
-    if (ob_ispunct(cs_, *character) || ob_iscntrl(cs_, *character)) {
+    if (cs_->ctype != NULL
+        && (((cs_->ctype + 1)[static_cast<unsigned char>(*character)] & (_MY_PNT | _MY_CTR)) != 0)) {
       special_mark_cnt++;
     }
   }

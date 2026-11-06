@@ -704,6 +704,7 @@ private:
   int inner_get_next_fts_index_row();
   int fetch_next_fts_index_rows();
   int fill_generated_fts_cols(const blocksstable::ObStorageDatum *cells);
+  int init_fts_col_exprs();
   int get_output_fts_col_expr_by_type(const ObExprOperatorType &type, ObExpr *&expr);
   bool is_resume_point_saved();
 protected:
@@ -735,6 +736,7 @@ protected:
   bool in_rescan_;
   ObDomainIndexCache domain_index_;
   ObFTIndexRowCache fts_index_;
+  ObExpr *fts_col_exprs_[share::ObFtsIndexBuilderUtil::OB_FTS_INDEX_OR_DOC_WORD_TABLE_COL_CNT] = {};
 
   // output_ is used to output data, TSC operator directly invokes output_::get_next_row(s),
   // it points to fold_iter_ in group rescan and iter_tree_ in normal scan.

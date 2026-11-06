@@ -85,6 +85,7 @@ public:
       K_(next_round_iter_idxes), K_(next_round_cnt));
 protected:
   virtual int pre_process();
+  virtual int merge_next_rows(const int64_t capacity, int64_t &count);
   virtual int do_one_merge_round(int64_t &count);
   virtual int fill_merge_heap();
   virtual int collect_dims_by_id(const ObDatum *&id_datum, double &relevance, bool &got_valid_id);
@@ -106,6 +107,8 @@ protected:
   ObFixedArray<int64_t, ObIAllocator> next_round_iter_idxes_;
   int64_t next_round_cnt_;
   void (*set_datum_func_)(ObDatum &, const ObDocIdExt &);
+  bool need_merge_heap_;
+  bool need_buffered_domain_ids_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObSRDaaTIterImpl);
 };

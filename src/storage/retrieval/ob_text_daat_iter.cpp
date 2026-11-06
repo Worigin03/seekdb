@@ -25,23 +25,37 @@ namespace storage
 int ObTextDaaTIter::init(const ObTextDaaTParam &param)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(param.base_param_) || OB_ISNULL(param.dim_iters_) || OB_ISNULL(param.allocator_)
-      || OB_ISNULL(param.relevance_collector_)) {
+  if (IS_INIT) {
+    ret = OB_INIT_TWICE;
+  } else if (OB_ISNULL(param.base_param_) || OB_ISNULL(param.dim_iters_) || OB_ISNULL(param.allocator_)
+      || OB_ISNULL(param.relevance_collector_) || OB_ISNULL(param.base_param_->id_proj_expr_)) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(ObSRDaaTIterImpl::init(*param.base_param_, *param.dim_iters_,
-                                            *param.allocator_, *param.relevance_collector_))) {
-  } else if (param.base_param_->need_project_relevance()
-      && OB_FAIL(bm25_param_estimator_.init(param.bm25_param_est_ctx_))) {
   } else {
     mode_flag_ = param.mode_flag_;
     function_lookup_mode_ = param.function_lookup_mode_;
-    const sql::ObDatumMeta &id_meta = iter_param_->id_proj_expr_->datum_meta_;
+    const sql::ObDatumMeta &id_meta = param.base_param_->id_proj_expr_->datum_meta_;
     use_small_union_ = sql::ObMatchAgainstMode::NATURAL_LANGUAGE_MODE == mode_flag_
-        && !function_lookup_mode_ && !iter_param_->need_project_relevance()
-        && !iter_param_->need_filter() && nullptr == iter_param_->dim_weights_
+        && !function_lookup_mode_ && !param.base_param_->need_project_relevance()
+        && !param.base_param_->need_filter() && nullptr == param.base_param_->dim_weights_
         && param.minimum_should_match_ <= 1
         && (ObUInt64Type == id_meta.type_ || (ObVarcharType == id_meta.type_ && CS_TYPE_BINARY == id_meta.cs_type_))
-        && dim_iters_->count() <= ObSRSimpleMerger::USE_SIMPLE_MERGER_MAX_TABLE_CNT;
+        && param.dim_iters_->count() <= ObSRSimpleMerger::USE_SIMPLE_MERGER_MAX_TABLE_CNT;
+    need_merge_heap_ = !use_small_union_;
+    need_buffered_domain_ids_ = !(use_small_union_ && ObUInt64Type == id_meta.type_);
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(ObSRDaaTIterImpl::init(*param.base_param_, *param.dim_iters_,
+                                            *param.allocator_, *param.relevance_collector_))) {
+  } else if (use_small_union_ && ObUInt64Type == param.base_param_->id_proj_expr_->datum_meta_.type_
+      && FALSE_IT(small_union_ids_.set_allocator(param.allocator_))) {
+  } else if (use_small_union_ && ObUInt64Type == param.base_param_->id_proj_expr_->datum_meta_.type_
+      && OB_FAIL(small_union_ids_.init(OB_MAX(param.base_param_->eval_ctx_->max_batch_size_,
+                                              param.base_param_->max_batch_size_)))) {
+  } else if (use_small_union_ && ObUInt64Type == param.base_param_->id_proj_expr_->datum_meta_.type_
+      && OB_FAIL(small_union_ids_.prepare_allocate(OB_MAX(param.base_param_->eval_ctx_->max_batch_size_,
+                                                          param.base_param_->max_batch_size_)))) {
+  } else if (param.base_param_->need_project_relevance()
+      && OB_FAIL(bm25_param_estimator_.init(param.bm25_param_est_ctx_))) {
   }
   return ret;
 }
@@ -49,6 +63,7 @@ int ObTextDaaTIter::init(const ObTextDaaTParam &param)
 void ObTextDaaTIter::reset()
 {
   bm25_param_estimator_.reset();
+  small_union_ids_.reset();
   // this class can know the type of dim_iters_, but ObSRDaaTIterImpl maybe not
   if (OB_NOT_NULL(dim_iters_)) {
     for (int64_t i = 0; i < dim_iters_->count(); ++i) {
@@ -85,12 +100,82 @@ int ObTextDaaTIter::pre_process()
   return ret;
 }
 
-int ObTextDaaTIter::do_one_merge_round(int64_t &count)
+int ObTextDaaTIter::merge_next_rows(const int64_t capacity, int64_t &count)
 {
-  if (!use_small_union_) {
-    return ObSRDaaTIterImpl::do_one_merge_round(count);
+  if (need_buffered_domain_ids_) {
+    return ObSRDaaTIterImpl::merge_next_rows(capacity, count);
   }
 
+  int ret = OB_SUCCESS;
+  const common::ObLimitParam &limit = *iter_param_->limit_param_;
+  const bool has_limit = limit.is_valid();
+  const int64_t offset = has_limit ? limit.offset_ : 0;
+  const int64_t dim_count = dim_iters_->count();
+  // Keep the merge in this loop and project once per batch. Heads point to
+  // iterator-owned buffers and are advanced only after their ID is emitted.
+  while (OB_SUCC(ret) && count < capacity) {
+    if (OB_FAIL(advance_small_union_heads())) {
+      break;
+    }
+
+    uint64_t min_id = UINT64_MAX;
+    next_round_cnt_ = 0;
+    for (int64_t i = 0; i < dim_count; ++i) {
+      const ObDatum *head = iter_domain_ids_[i];
+      if (nullptr != head) {
+        const uint64_t id = head->get_uint();
+        if (id < min_id) {
+          min_id = id;
+          next_round_cnt_ = 0;
+        }
+        if (id == min_id) {
+          next_round_iter_idxes_[next_round_cnt_++] = i;
+        }
+      }
+    }
+
+    if (0 == next_round_cnt_) {
+      ret = OB_ITER_END;
+    } else if (++input_row_cnt_ > offset) {
+      small_union_ids_[count++] = min_id;
+      ++output_row_cnt_;
+      if (has_limit && output_row_cnt_ >= limit.limit_) {
+        ret = OB_ITER_END;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTextDaaTIter::project_results(const int64_t count)
+{
+  if (need_buffered_domain_ids_) {
+    return ObSRDaaTIterImpl::project_results(count);
+  }
+  int ret = OB_SUCCESS;
+  sql::ObExpr *id_proj_expr = iter_param_->id_proj_expr_;
+  sql::ObEvalCtx *eval_ctx = iter_param_->eval_ctx_;
+  sql::ObEvalCtx::BatchInfoScopeGuard guard(*eval_ctx);
+  if (eval_ctx->is_vectorized()) {
+    sql::ObBitVector &evaluated_flags = id_proj_expr->get_evaluated_flags(*eval_ctx);
+    for (int64_t i = 0; i < count; ++i) {
+      guard.set_batch_idx(i);
+      id_proj_expr->locate_datum_for_write(*eval_ctx).set_uint(small_union_ids_[i]);
+      evaluated_flags.set(i);
+    }
+    id_proj_expr->set_evaluated_projected(*eval_ctx);
+  } else if (OB_UNLIKELY(1 != count)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    guard.set_batch_idx(0);
+    id_proj_expr->locate_datum_for_write(*eval_ctx).set_uint(small_union_ids_[0]);
+    id_proj_expr->set_evaluated_projected(*eval_ctx);
+  }
+  return ret;
+}
+
+int ObTextDaaTIter::advance_small_union_heads()
+{
   int ret = OB_SUCCESS;
   // Advance only streams that supplied the previous minimum. The remaining
   // heads are still valid in their iterator-owned posting batches.
@@ -106,23 +191,24 @@ int ObTextDaaTIter::do_one_merge_round(int64_t &count)
     }
   }
 
-  if (OB_SUCC(ret)) {
+  return ret;
+}
+
+int ObTextDaaTIter::do_one_merge_round(int64_t &count)
+{
+  if (!use_small_union_) {
+    return ObSRDaaTIterImpl::do_one_merge_round(count);
+  }
+
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(advance_small_union_heads())) {
+  } else {
     next_round_cnt_ = 0;
     const ObDatum *minimum = nullptr;
-    const bool integer_id = ObUInt64Type == iter_param_->id_proj_expr_->datum_meta_.type_;
     for (int64_t i = 0; i < dim_iters_->count(); ++i) {
       const ObDatum *head = iter_domain_ids_[i];
       if (nullptr != head) {
-        int cmp = -1;
-        if (nullptr != minimum) {
-          if (integer_id) {
-            const uint64_t id = head->get_uint();
-            const uint64_t min_id = minimum->get_uint();
-            cmp = id < min_id ? -1 : (id == min_id ? 0 : 1);
-          } else {
-            cmp = head->get_string().compare(minimum->get_string());
-          }
-        }
+        const int cmp = nullptr == minimum ? -1 : head->get_string().compare(minimum->get_string());
         if (cmp < 0) {
           minimum = head;
           next_round_cnt_ = 0;

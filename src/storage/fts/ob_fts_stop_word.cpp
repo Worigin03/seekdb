@@ -123,7 +123,8 @@ ObAddWord::ObAddWord(
     const ObObjMeta &meta,
     const ObAddWordFlag &flag,
     common::ObIAllocator &allocator,
-    ObFTWordMap &word_map)
+    ObFTWordMap &word_map,
+    const ObString &borrowable_input)
   : word_meta_(meta),
     allocator_(allocator),
     word_map_(word_map),
@@ -132,7 +133,8 @@ ObAddWord::ObAddWord(
     stopword_cnt_(0),
     min_token_size_(property.min_token_size_),
     max_token_size_(property.max_token_size_),
-    flag_(flag)
+    flag_(flag),
+    borrowable_input_(borrowable_input)
 {
 }
 
@@ -172,15 +174,38 @@ int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
   if (OB_UNLIKELY(src.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else if (flag_.casedown()) {
-    ObString dst_str;
-    if (OB_FAIL(ObCharset::tolower(
-                    word_meta_.get_collation_type(),
-                    src.get_word().get_string(),
-                    dst_str,
-                    allocator_))) {
+    const ObString src_str = src.get_word().get_string();
+    const ObCharsetInfo *cs_info = ObCharset::get_charset(word_meta_.get_collation_type());
+    char buf[256];
+    const uintptr_t input_offset = reinterpret_cast<uintptr_t>(src_str.ptr())
+        - reinterpret_cast<uintptr_t>(borrowable_input_.ptr());
+    const bool can_borrow = src_str.length() <= borrowable_input_.length()
+        && input_offset <= static_cast<uintptr_t>(borrowable_input_.length() - src_str.length());
+    if (OB_ISNULL(cs_info)) {
+      ret = OB_INVALID_ARGUMENT;
+    } else if (can_borrow
+               && src_str.length() * cs_info->casedn_multiply <= static_cast<int64_t>(sizeof(buf))) {
+      const int64_t buf_len = src_str.length() * cs_info->casedn_multiply;
+      const size_t size = cs_info->cset->casedn(cs_info, const_cast<char *>(src_str.ptr()),
+                                               src_str.length(), buf, buf_len);
+      const ObString converted(size, buf);
+      if (0 == src_str.compare(converted)) {
+        dst = src;
+      } else {
+        ObString dst_str;
+        if (OB_FAIL(ob_write_string(allocator_, converted, dst_str))) {
+        } else {
+          ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
+          dst = tmp;
+        }
+      }
     } else {
-      ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
-      dst = tmp;
+      ObString dst_str;
+      if (OB_FAIL(ObCharset::tolower(cs_info, src_str, dst_str, allocator_))) {
+      } else {
+        ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
+        dst = tmp;
+      }
     }
   } else {
     dst = src;

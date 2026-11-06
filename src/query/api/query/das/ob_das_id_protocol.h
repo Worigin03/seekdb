@@ -41,6 +41,7 @@ public:
   int hash(uint64_t &hash_val) const;
   const common::ObDatum &get_datum() const;
   int from_datum(const common::ObDatum &datum);
+  void set_uint(const uint64_t value) { datum_.set_uint(value); }
   int from_obj(const common::ObObj &obj);
 
   ObDocIdExt &operator=(const ObDocIdExt &other);

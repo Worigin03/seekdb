@@ -439,9 +439,9 @@ int ObTextRetrievalDaaTTokenIter::init(const ObTextRetrievalScanIterParam &iter_
       cmp_func_ = basic_funcs->null_first_cmp_;
       if (OB_ISNULL(cmp_func_)) {
         ret = OB_ERR_UNEXPECTED;
-      } else if (FALSE_IT(relevance_.set_allocator(allocator_))) {
-      } else if (OB_FAIL(relevance_.init(max_batch_size_))) {
-      } else if (OB_FAIL(relevance_.prepare_allocate(max_batch_size_))) {
+      } else if (OB_NOT_NULL(relevance_expr_) && FALSE_IT(relevance_.set_allocator(allocator_))) {
+      } else if (OB_NOT_NULL(relevance_expr_) && OB_FAIL(relevance_.init(max_batch_size_))) {
+      } else if (OB_NOT_NULL(relevance_expr_) && OB_FAIL(relevance_.prepare_allocate(max_batch_size_))) {
       } else if (FALSE_IT(doc_id_.set_allocator(allocator_))) {
       } else if (OB_FAIL(doc_id_.init(max_batch_size_))) {
       } else if (OB_FAIL(doc_id_.prepare_allocate(max_batch_size_))) {
@@ -526,10 +526,13 @@ int ObTextRetrievalDaaTTokenIter::save_docids()
   } else {
     cur_idx_ = 0;
     const ObDatumVector &doc_id_datum = inv_scan_domain_id_col_->locate_expr_datumvector(*eval_ctx_);
+    const bool integer_id = ObUInt64Type == inv_scan_domain_id_col_->datum_meta_.type_;
     for (int64_t i = 0; OB_SUCC(ret) && i < count_; ++i) {
-      if (OB_LIKELY(!token_iter_->get_skip()->at(i))) {
-        if (OB_FAIL(doc_id_[i].from_datum(*doc_id_datum.at(i)))) {
-        };
+      const ObDatum &id = *doc_id_datum.at(i);
+      if (token_iter_->get_skip()->at(i)) {
+      } else if (integer_id && !id.is_null()) {
+        doc_id_[i].set_uint(id.get_uint());
+      } else if (OB_FAIL(doc_id_[i].from_datum(id))) {
       }
     }
   }
