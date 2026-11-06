@@ -14,15 +14,16 @@ vector adaptor. It does not replace VSAG globally.
 - A dense L2 HNSW/HGRAPH index opts in with `WITH (lib=cuvs)`.
 - `lib=vsag` indexes keep their existing CPU behavior.
 - Cosine and inner-product metrics are rejected for `lib=cuvs` at DDL time.
-- Filters, deletes, stale GPU indexes, and unavailable GPUs fall back to VSAG.
+- Queries with filters, deletes, stale GPU indexes, or an unavailable GPU can
+  fall back to VSAG.
 - `dbms_vector.batch_knn` exposes one-call batched GPU ANN for explicit batch
   workloads.
 
 The product integration lives in:
 
 - [`ob_vsag_adaptor.cpp`](../../src/oblib/lib/vector/ob_vsag_adaptor.cpp):
-  per-index marking, buffered vectors, lazy CAGRA build/search, freshness and
-  safety fallback, trace points, and batch entry points.
+  per-index marking, buffered vectors, CAGRA snapshot construction and search,
+  freshness and safety fallback, trace points, and batch entry points.
 - [`ob_plugin_vector_index_adaptor.cpp`](../../src/observer/vector_index/ob_plugin_vector_index_adaptor.cpp):
   maps declarative `lib=cuvs` indexes to the adaptor handle.
 - [`ob_vector_index_util.cpp`](../../src/observer/vector_index/ob_vector_index_util.cpp):
@@ -47,6 +48,8 @@ seekdb_cuvs_build
 seekdb_cuvs_search
 seekdb_cuvs_free
 seekdb_cuvs_cagra_knn
+seekdb_cuvs_serialize
+seekdb_cuvs_deserialize
 ```
 
 Build seekdb with the resulting library:
@@ -96,6 +99,41 @@ See [`examples/batch_knn.sql`](examples/batch_knn.sql) for the table contract.
 
 ## Validation
 
+For a build comparison, start the GPU-enabled seekdb binary in an isolated
+instance with vector memory configured and `LOAD DATA LOCAL INFILE` enabled.
+Run the benchmark on the same machine as the observer:
+
+```bash
+python3 docs/gpu-vector-index-hipvs-cuvs/validation/benchmark_hnsw_build.py \
+  --port 2881 --rows 50000 --dim 128 --repeats 3
+```
+
+On Linux the script discovers the live observer log from the SQL listener
+when the benchmark user can inspect the observer's file descriptors.
+Pass `--log /path/to/seekdb.log` if discovery is unavailable. By default
+each run writes a new `hnsw-build-results-<id>.json` in the working directory.
+
+The script creates a fresh benchmark database and loads identical rows into
+each test table before timing `CREATE VECTOR INDEX`. It alternates CPU and GPU
+run order and records every DDL duration, the median speedup, and Recall@10
+against an exact scan of the unindexed source. It requires a successful GPU
+graph build and snapshot in the DDL log before reporting a speedup. Keep other
+vector-index builds idle while running it so the log window belongs to the
+current test. The generated database remains available for inspection.
+
+The bridge uses CAGRA with graph degree 64, intermediate graph degree 128,
+and 20 NN-Descent iterations. To reproduce the tuned comparison with the
+validation runner's pinned source revision, pass those parameters explicitly.
+The runner builds the bridge, starts an isolated seekdb instance, and writes
+`hnsw-build-results.json` to its artifacts directory.
+
+```bash
+BENCH_CAGRA_PARAMS=64,128,20 \
+  bash docs/gpu-vector-index-hipvs-cuvs/validation/run_radeon_build_benchmark.sh \
+    docs/gpu-vector-index-hipvs-cuvs/validation/benchmark_hnsw_build.py \
+    --rows 50000 --dim 128 --repeats 3
+```
+
 The self-contained GPU smoke runner generates deterministic vectors and ground
 truth; it does not use private `/work/datasets` or `/work/bench` assets:
 
@@ -129,8 +167,8 @@ The no-GPU DDL contract remains covered by
 ## Current limitations
 
 - Phase 1 supports dense float32 L2 indexes only.
-- GPU indexes are process-local and rebuilt lazily; persistence and cache reuse
-  are follow-up work.
+- GPU snapshots persist the CAGRA graph for reload. In-memory delta and
+  refreshed GPU indexes may build lazily.
 - The explicit batch API rebuilds its CAGRA index per call.
 - GPU validation is manual because upstream CI has no compatible GPU runner.
 - Multi-GPU, long-duration, and snapshot-reload coverage are out of scope for
