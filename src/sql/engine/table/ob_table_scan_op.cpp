@@ -3627,18 +3627,18 @@ int ObTableScanOp::fill_generated_cellid_mbr(
 int ObTableScanOp::inner_get_next_fts_index_row()
 {
   int ret = OB_SUCCESS;
-  blocksstable::ObDatumRow *row = nullptr;
-  if (OB_FAIL(fts_index_.get_next_row(row))) {
+  const blocksstable::ObStorageDatum *cells = nullptr;
+  if (OB_FAIL(fts_index_.get_next_row(cells))) {
     if (OB_ITER_END != ret) {
     } else if (OB_FAIL(fetch_next_fts_index_rows())) { // need overwrite return code
       if (OB_ITER_END != ret) {
       }
-    } else if (OB_FAIL(fts_index_.get_next_row(row))) {
+    } else if (OB_FAIL(fts_index_.get_next_row(cells))) {
       if (OB_ITER_END != ret) {
       }
     }
   }
-  if (FAILEDx(fill_generated_fts_cols(row))) {
+  if (FAILEDx(fill_generated_fts_cols(cells))) {
   }
   return ret;
 }
@@ -3685,12 +3685,12 @@ int ObTableScanOp::fetch_next_fts_index_rows()
   return ret;
 }
 
-int ObTableScanOp::fill_generated_fts_cols(blocksstable::ObDatumRow *row)
+int ObTableScanOp::fill_generated_fts_cols(const blocksstable::ObStorageDatum *cells)
 {
   int ret = OB_SUCCESS;
   const ObObjDatumMapType *types = MY_SPEC.is_fts_index_aux_ ? ObFTIndexRowCache::FTS_INDEX_TYPES : ObFTIndexRowCache::FTS_DOC_WORD_TYPES;
   const ObExprOperatorType *expr_types = MY_SPEC.is_fts_index_aux_ ? ObFTIndexRowCache::FTS_INDEX_EXPR_TYPE : ObFTIndexRowCache::FTS_DOC_WORD_EXPR_TYPE;
-  if (OB_ISNULL(row)) {
+  if (OB_ISNULL(cells)) {
     ret = OB_INVALID_ARGUMENT;
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < share::ObFtsIndexBuilderUtil::OB_FTS_INDEX_OR_DOC_WORD_TABLE_COL_CNT; ++i) {
@@ -3699,7 +3699,7 @@ int ObTableScanOp::fill_generated_fts_cols(blocksstable::ObDatumRow *row)
       } else {
         ObDatum &datum = expr->locate_datum_for_write(eval_ctx_);
         ObEvalInfo &eval_info = expr->get_eval_info(eval_ctx_);
-        if (OB_FAIL(datum.from_storage_datum(row->storage_datums_[i], types[i]))) {
+        if (OB_FAIL(datum.from_storage_datum(cells[i], types[i]))) {
         } else {
           eval_info.evaluated_ = true;
           eval_info.projected_ = true;

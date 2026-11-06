@@ -51,7 +51,8 @@ private:
   ObObjMeta meta_;
 };
 
-typedef common::hash::ObHashMap<ObFTWord, int64_t> ObFTWordMap;
+// A tokenizer or a backfill worker owns each map exclusively.
+using ObFTWordMap = common::hash::ObHashMap<ObFTWord, int64_t, common::hash::NoPthreadDefendMode>;
 
 class ObAddWordFlag final
 {

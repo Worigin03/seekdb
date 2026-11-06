@@ -16710,8 +16710,7 @@ int ObJoinOrder::get_query_tokens(ObMatchFunRawExpr *match_expr,
     const ObString &parser_properties = index_schema->get_parser_property_str();
     const ObObjMeta &key_meta = match_expr->get_search_key()->get_result_meta();
     storage::ObFTParseHelper tokenize_helper;
-    common::ObSEArray<ObFTWord, 16> tokens;
-    hash::ObHashMap<ObFTWord, int64_t> token_map;
+    storage::ObFTWordMap token_map;
     int64_t doc_length = 0;
     const int64_t ft_word_bkt_cnt = MAX(search_text_string.length() / 10, 2);
     if (search_text_string.length() == 0) {
@@ -16725,13 +16724,12 @@ int ObJoinOrder::get_query_tokens(ObMatchFunRawExpr *match_expr,
                            doc_length,
                            token_map))) {
     } else {
-      for (hash::ObHashMap<ObFTWord, int64_t>::const_iterator iter = token_map.begin();
+      for (storage::ObFTWordMap::const_iterator iter = token_map.begin();
           OB_SUCC(ret) && iter != token_map.end();
           ++iter) {
-        const ObFTWord &token = iter->first;
         ObString token_string;
         ObConstRawExpr *token_expr = NULL;
-        if (OB_FAIL(ob_write_string(*allocator_, token.get_word().get_string(), token_string))) {
+        if (OB_FAIL(ob_write_string(*allocator_, iter->first.get_word().get_string(), token_string))) {
         } else if (OB_FAIL(ObRawExprUtils::build_const_string_expr(
                                *OPT_CTX.get_exec_ctx()->get_expr_factory(),
                                ObVarcharType,

@@ -47,15 +47,16 @@ public:
       const common::ObString &parser_name,
       const common::ObString &parser_properties);
   int segment(const common::ObObjMeta &ft_obj_meta, const ObDatum &doc_id, const common::ObString &fulltext);
-  int get_next_row(blocksstable::ObDatumRow *&row);
+  int get_next_row(const blocksstable::ObStorageDatum *&cells);
   void reset();
   void reuse();
   TO_STRING_KV(K_(row_idx), K_(is_fts_index_aux), K_(helper), K_(is_inited),
-               "row_count", rows_.count());
+               K_(row_count));
 private:
   lib::MemoryContext merge_memctx_;
-  ObDomainIndexRow rows_;
-  uint64_t row_idx_;
+  blocksstable::ObStorageDatum *rows_;
+  int64_t row_count_;
+  int64_t row_idx_;
   bool is_fts_index_aux_;
   storage::ObFTParseHelper helper_;
   bool is_inited_;
@@ -197,13 +198,6 @@ public:
       const ObDASWriteBuffer::DmlRow &dml_row,
       ObDomainIndexRow &domain_rows);
 private:
-  static int segment_and_calc_word_count(
-      common::ObIAllocator &allocator,
-      storage::ObFTParseHelper *helper,
-      const common::ObObjMeta &meta,
-      const ObString &fulltext,
-      int64_t &doc_length,
-      storage::ObFTWordMap &words_count);
   static int calc_save_rowkey_policy(
     ObIAllocator &allocator,
     const ObDASDMLBaseCtDef &das_ctdef,

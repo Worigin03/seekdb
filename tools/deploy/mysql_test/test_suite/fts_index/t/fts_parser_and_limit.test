@@ -9,6 +9,12 @@ SELECT TOKENIZE('研究生命起源 ＡＢＣ１２３ 三千六百五十天 한
 SELECT TOKENIZE('研究生命起源 研究生 人工智能', 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]');
 SELECT TOKENIZE('THE Database, database and audit; A+B Café ÉTÉ. 中文', 'beng', '[{"output":"all"}]');
 
+SET NAMES utf8mb4 COLLATE utf8mb4_general_ci;
+SELECT TOKENIZE('cafe CAFÉ Café cAfE cafe café', 'beng', '[{"output":"all"}]');
+SET NAMES utf8mb4 COLLATE utf8mb4_bin;
+SELECT TOKENIZE('cafe CAFÉ Café cAfE cafe café', 'beng', '[{"output":"all"}]');
+SET NAMES utf8mb4;
+
 CREATE TABLE docs (id INT PRIMARY KEY, tag INT, body TEXT) DEFAULT CHARSET utf8mb4;
 INSERT INTO docs VALUES (1, NULL, '数据库 全文索引'), (2, 9, '全文索引 全文索引'), (3, 2, '全文索引 调优'), (4, NULL, '分词与排序'), (5, 8, NULL);
 ALTER TABLE docs ADD FULLTEXT INDEX idx_body(body) WITH PARSER ik;
@@ -32,4 +38,11 @@ INSERT INTO english_docs VALUES (6, 'database performance audit');
 SELECT GROUP_CONCAT(id ORDER BY id) AS ids FROM english_docs WHERE MATCH(body) AGAINST('database performance audit');
 ROLLBACK;
 SELECT GROUP_CONCAT(id ORDER BY id) AS ids FROM english_docs WHERE MATCH(body) AGAINST('database performance audit');
+
+CREATE TABLE archived_docs (id VARCHAR(16) PRIMARY KEY, body LONGTEXT) DEFAULT CHARSET utf8mb4;
+INSERT INTO archived_docs VALUES ('archived', CONCAT(REPEAT('database ', 3200), 'rareterm')), ('empty', NULL);
+ALTER TABLE archived_docs ADD FULLTEXT INDEX idx_body(body) WITH PARSER beng;
+SELECT id FROM archived_docs WHERE MATCH(body) AGAINST('+database +rareterm' IN BOOLEAN MODE) ORDER BY id;
+UPDATE archived_docs SET body = 'database' WHERE id = 'archived';
+SELECT COUNT(*) FROM archived_docs WHERE MATCH(body) AGAINST('rareterm');
 DROP DATABASE fts_parser_and_limit;
