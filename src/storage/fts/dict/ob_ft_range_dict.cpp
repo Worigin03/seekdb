@@ -389,16 +389,13 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
   int64_t right = range_dicts_.size() - 1;
   while (left <= right) {
     const int64_t mid = left + ((right - left) >> 1);
-    const int cmp_start = ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                                            range_dicts_[mid].start_.get_word(),
-                                            single_word);
-    if (cmp_start > 0) {
+    const ObFTRange &range = range_dicts_[mid];
+    // UTF8MB4_BIN range bounds use bytewise comparison without space padding.
+    if (range.start_.get_word().compare(single_word) > 0) {
       right = mid - 1;
       continue;
     }
-    const int cmp_end = ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                                          range_dicts_[mid].end_.get_word(),
-                                          single_word);
+    const int cmp_end = range.end_.get_word().compare(single_word);
     if (cmp_end < 0) {
       left = mid + 1;
     } else {

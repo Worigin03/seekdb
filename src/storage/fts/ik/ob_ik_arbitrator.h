@@ -59,7 +59,16 @@ private:
 
 private:
   ObArenaAllocator alloc_;
-  ObSEArray<ObIKTokenChain *, 16> chains_;
+  struct TokenGroup
+  {
+    const ObIKToken *single_;
+    ObIKTokenChain *chain_;
+    int64_t start_offset() const
+    {
+      return nullptr != single_ ? single_->offset_ : chain_->min_offset();
+    }
+  };
+  ObSEArray<TokenGroup, 16> groups_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObIKArbitrator);

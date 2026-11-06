@@ -29,6 +29,15 @@ using namespace share::schema;
 namespace sql
 {
 
+namespace
+{
+bool needs_text_scoring_columns(const ObTextRetrievalInfo &tr_info)
+{
+  return tr_info.need_calc_relevance_ || nullptr != tr_info.pushdown_match_filter_;
+}
+} // namespace
+
+
 int ObTscCgService::generate_tsc_ctdef(ObLogTableScan &op, ObTableScanCtDef &tsc_ctdef)
 {
   int ret = OB_SUCCESS;
@@ -2328,9 +2337,11 @@ int ObTscCgService::extract_text_ir_access_columns(
   } else {
     switch (scan_ctdef.ir_scan_type_) {
     case ObTSCIRScanType::OB_IR_INV_IDX_SCAN:
-      if (OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.token_cnt_column_)))) {
+      if (needs_text_scoring_columns(tr_info)
+          && OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.token_cnt_column_)))) {
       } else if (OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.docid_or_rowkey_column_)))) {
-      } else if (OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.doc_length_column_)))) {
+      } else if (needs_text_scoring_columns(tr_info)
+                 && OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.doc_length_column_)))) {
       }
       break;
     case ObTSCIRScanType::OB_IR_DOC_ID_IDX_AGG:
@@ -2687,12 +2698,12 @@ int ObTscCgService::extract_text_ir_das_output_column_ids(
 {
   int ret = OB_SUCCESS;
   if (ObTSCIRScanType::OB_IR_INV_IDX_SCAN == scan_ctdef.ir_scan_type_) {
-    if (OB_FAIL(output_cids.push_back(
-        static_cast<ObColumnRefRawExpr *>(tr_info.token_cnt_column_)->get_column_id()))) {
+    if (needs_text_scoring_columns(tr_info) && OB_FAIL(output_cids.push_back(
+        tr_info.token_cnt_column_->get_column_id()))) {
     } else if (OB_FAIL(output_cids.push_back(
         static_cast<ObColumnRefRawExpr *>(tr_info.docid_or_rowkey_column_)->get_column_id()))) {
-    } else if (OB_FAIL(output_cids.push_back(
-        static_cast<ObColumnRefRawExpr *>(tr_info.doc_length_column_)->get_column_id()))) {
+    } else if (needs_text_scoring_columns(tr_info) && OB_FAIL(output_cids.push_back(
+        tr_info.doc_length_column_->get_column_id()))) {
     }
   }
   return ret;
@@ -3010,22 +3021,25 @@ int ObTscCgService::generate_text_ir_spec_exprs(const ObTextRetrievalInfo &tr_in
     const ObColumnRefRawExpr *doc_id_column = tr_info.docid_or_rowkey_column_;
     const ObColumnRefRawExpr *doc_length_column = tr_info.doc_length_column_;
 
+    const bool needs_scoring = needs_text_scoring_columns(tr_info);
     int64_t doc_id_col_idx = -1;
     int64_t doc_length_col_idx = -1;
     for (int64_t i = 0; i < inv_scan_col_id.count(); ++i) {
       if (inv_scan_col_id.at(i) == doc_id_column->get_column_id()) {
         doc_id_col_idx = i;
-      } else if (inv_scan_col_id.at(i) == doc_length_column->get_column_id()) {
+      } else if (needs_scoring && inv_scan_col_id.at(i) == doc_length_column->get_column_id()) {
         doc_length_col_idx = i;
       }
     }
-    if (OB_UNLIKELY(-1 == doc_id_col_idx || -1 == doc_length_col_idx)) {
+    if (OB_UNLIKELY(-1 == doc_id_col_idx || (needs_scoring && -1 == doc_length_col_idx))) {
       ret = OB_ERR_UNEXPECTED;
     } else {
       text_ir_scan_ctdef.inv_scan_domain_id_col_ =
           text_ir_scan_ctdef.get_inv_idx_scan_ctdef()->pd_expr_spec_.access_exprs_.at(doc_id_col_idx);
-      text_ir_scan_ctdef.inv_scan_doc_length_col_ =
-          text_ir_scan_ctdef.get_inv_idx_scan_ctdef()->pd_expr_spec_.access_exprs_.at(doc_length_col_idx);
+      if (needs_scoring) {
+        text_ir_scan_ctdef.inv_scan_doc_length_col_ =
+            text_ir_scan_ctdef.get_inv_idx_scan_ctdef()->pd_expr_spec_.access_exprs_.at(doc_length_col_idx);
+      }
       if (OB_FAIL(result_output.push_back(text_ir_scan_ctdef.inv_scan_domain_id_col_))) {
       }
     }

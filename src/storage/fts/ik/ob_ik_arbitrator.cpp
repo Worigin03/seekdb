@@ -35,74 +35,45 @@ namespace storage
 int ObIKArbitrator::process(TokenizeContext &ctx)
 {
   int ret = OB_SUCCESS;
+  const auto &tokens = ctx.token_list().tokens();
+  auto iter = tokens.begin();
 
-  ObList<ObIKToken, ObIAllocator> &tokens = ctx.token_list().tokens();
-  ObIKTokenChain *chain_need_arbitrate = nullptr;
-  bool use_smart = ctx.is_smart();
-  if (OB_ISNULL(chain_need_arbitrate = OB_NEWx(ObIKTokenChain, &alloc_, alloc_))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("alloc memory failed");
-  } else {
-    while (OB_SUCC(ret) && !tokens.empty()) {
-      ObIKToken token = tokens.get_first();
-      bool is_add = false;
-      if (OB_FAIL(tokens.pop_front())) {
-      } else if (OB_FAIL(chain_need_arbitrate->add_token_if_conflict(token, is_add))) {
-      } else if (!is_add) {
-        ObFTSortList::CellIter iter = chain_need_arbitrate->list().tokens().begin();
-        ObIKTokenChain *judge_result = nullptr;
-        if (chain_need_arbitrate->list().tokens().size() == 1 || !use_smart) {
-          if (OB_FAIL(add_chain(chain_need_arbitrate))) {
-          } else {
-            // add ok
-          }
-        } else if (OB_FAIL(optimize(ctx,
-                                    chain_need_arbitrate,
-                                    iter,
-                                    chain_need_arbitrate->offset_len(),
-                                    judge_result))) {
-        } else if (OB_FAIL(add_chain(judge_result))) {
-        } else {
-          // add best chain and delete origin chain
-          OB_DELETEx(ObIKTokenChain, &alloc_, chain_need_arbitrate);
-        }
-
-        // start a new chain
-        if (OB_FAIL(ret)) {
-        } else if (OB_ISNULL(chain_need_arbitrate = OB_NEWx(ObIKTokenChain, &alloc_, alloc_))) {
-          ret = OB_ALLOCATE_MEMORY_FAILED;
-          LOG_WARN("alloc memory failed");
-        } else if (OB_FAIL(chain_need_arbitrate->add_token_if_conflict(token, is_add))) {
-        } else {
-          // Add first, it should be added.
-        }
-      } else {
-        // still use same cross chain
-      }
-    }
-
-    // handle last chain
-    ObIKTokenChain *judge_result = nullptr;
-    if (OB_FAIL(ret)) {
-    } else if (chain_need_arbitrate->list().tokens().size() == 1 || !use_smart) {
-      if (OB_FAIL(add_chain(chain_need_arbitrate))) {
-      }
-    } else if (OB_FAIL(optimize(ctx,
-                                chain_need_arbitrate,
-                                chain_need_arbitrate->list().tokens().begin(),
-                                chain_need_arbitrate->offset_len(),
-                                judge_result))) {
-    } else if (OB_FAIL(add_chain(judge_result))) {
-      OB_DELETEx(ObIKTokenChain, &alloc_, judge_result);
+  // The source token list stays alive through output_result(). Only groups
+  // with overlapping tokens need an owned chain for arbitration.
+  while (OB_SUCC(ret) && iter != tokens.end()) {
+    const ObIKToken &first = *iter;
+    ++iter;
+    if (iter == tokens.end() || (*iter).offset_ >= first.offset_ + first.length_) {
+      ret = groups_.push_back({&first, nullptr});
     } else {
+      ObIKTokenChain *chain = OB_NEWx(ObIKTokenChain, &alloc_, alloc_);
+      bool added = false;
+      if (OB_ISNULL(chain)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else if (OB_FAIL(chain->add_token_if_conflict(first, added))) {
+      } else {
+        while (OB_SUCC(ret) && iter != tokens.end()) {
+          if (OB_FAIL(chain->add_token_if_conflict(*iter, added))) {
+          } else if (!added) {
+            break;
+          } else {
+            ++iter;
+          }
+        }
+      }
+
+      if (OB_SUCC(ret) && ctx.is_smart()) {
+        ObIKTokenChain *selected = nullptr;
+        if (OB_FAIL(optimize(ctx, chain, chain->list().tokens().begin(), chain->offset_len(), selected))) {
+        } else {
+          ret = add_chain(selected);
+        }
+        OB_DELETEx(ObIKTokenChain, &alloc_, chain);
+      } else if (OB_SUCC(ret)) {
+        ret = add_chain(chain);
+      }
     }
   }
-
-  // if failed, free chain_need_arbitrate
-  if (OB_FAIL(ret)) {
-    OB_DELETEx(ObIKTokenChain, &alloc_, chain_need_arbitrate);
-  }
-
   return ret;
 }
 
@@ -115,7 +86,7 @@ int ObIKArbitrator::output_result(TokenizeContext &ctx)
   for (int64_t current = 0; OB_SUCC(ret) && current < ctx.fulltext_len();) {
     // Conflict groups are generated in document order. A selected chain
     // remains inside its group, so its start can be found in a single pass.
-    while (chain_idx < chains_.count() && chains_.at(chain_idx)->min_offset() < current) {
+    while (chain_idx < groups_.count() && groups_.at(chain_idx).start_offset() < current) {
       ++chain_idx;
     }
     ObFTCharUtil::CharType type;
@@ -130,7 +101,7 @@ int ObIKArbitrator::output_result(TokenizeContext &ctx)
                                                          type))) {
     } else if (ObFTCharUtil::CharType::USELESS == type) {
       current += char_len; // skip useless char
-    } else if (chain_idx == chains_.count() || chains_.at(chain_idx)->min_offset() != current) {
+    } else if (chain_idx == groups_.count() || groups_.at(chain_idx).start_offset() != current) {
       if (!keep_single()) {
         // skip single word
       } else {
@@ -158,8 +129,14 @@ int ObIKArbitrator::output_result(TokenizeContext &ctx)
         }
       }
       current += char_len;
+    } else if (nullptr != groups_.at(chain_idx).single_) {
+      const ObIKToken &token = *groups_.at(chain_idx).single_;
+      if (OB_FAIL(ctx.result_list().push_back(token))) {
+      } else {
+        current = token.offset_ + token.length_;
+      }
     } else {
-      ObIKTokenChain *chain = chains_.at(chain_idx);
+      ObIKTokenChain *chain = groups_.at(chain_idx).chain_;
       for (ObList<ObIKToken, ObIAllocator>::const_iterator iter = chain->list().tokens().begin();
            OB_SUCC(ret) && iter != chain->list().tokens().end();
            iter++) {
@@ -310,14 +287,14 @@ int ObIKArbitrator::add_chain(ObIKTokenChain *chain)
     ret = OB_INVALID_ARGUMENT;
   } else if (chain->list().is_empty()) {
     // no need to add empty chain
-  } else if (OB_FAIL(chains_.push_back(chain))) {
+  } else if (OB_FAIL(groups_.push_back({nullptr, chain}))) {
   }
   return ret;
 }
 
 ObIKArbitrator::~ObIKArbitrator()
 {
-  chains_.reset();
+  groups_.reset();
   alloc_.reset();
 }
 } // namespace storage
