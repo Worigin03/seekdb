@@ -1,0 +1,35 @@
+--disable_warnings
+DROP DATABASE IF EXISTS fts_parser_and_limit;
+--enable_warnings
+CREATE DATABASE fts_parser_and_limit;
+USE fts_parser_and_limit;
+SET NAMES utf8mb4;
+
+SELECT TOKENIZE('研究生命起源 ＡＢＣ１２３ 三千六百五十天 한글 しんぶん 🚀', 'ik', '[{"output":"all"}]');
+SELECT TOKENIZE('研究生命起源 研究生 人工智能', 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]');
+SELECT TOKENIZE('THE Database, database and audit; A+B Café ÉTÉ. 中文', 'beng', '[{"output":"all"}]');
+
+CREATE TABLE docs (id INT PRIMARY KEY, tag INT, body TEXT) DEFAULT CHARSET utf8mb4;
+INSERT INTO docs VALUES (1, NULL, '数据库 全文索引'), (2, 9, '全文索引 全文索引'), (3, 2, '全文索引 调优'), (4, NULL, '分词与排序'), (5, 8, NULL);
+ALTER TABLE docs ADD FULLTEXT INDEX idx_body(body) WITH PARSER ik;
+SELECT id, MATCH(body) AGAINST('全文索引') AS score FROM docs WHERE MATCH(body) AGAINST('全文索引') ORDER BY score DESC, id;
+SELECT COUNT(*) FROM (SELECT id FROM docs WHERE MATCH(body) AGAINST('全文索引') LIMIT 2 OFFSET 1) AS limited;
+SELECT COUNT(*) FROM (SELECT id FROM docs WHERE MATCH(body) AGAINST('不存在的串嗄') LIMIT 4 OFFSET 10) AS limited;
+SELECT COUNT(*) FROM (SELECT id FROM docs WHERE MATCH(body) AGAINST('全文索引') LIMIT 0) AS limited;
+SELECT COUNT(tag) FROM (SELECT id, tag FROM docs WHERE MATCH(body) AGAINST('全文索引') ORDER BY id LIMIT 2) AS limited;
+SELECT COUNT(*) FROM (SELECT id FROM docs WHERE MATCH(body) AGAINST('全文索引') ORDER BY id LIMIT 2) AS limited WHERE id > 2;
+SELECT id FROM (SELECT id FROM docs WHERE MATCH(body) AGAINST('全文索引') LIMIT 2) AS limited ORDER BY id;
+
+CREATE TABLE english_docs (id INT PRIMARY KEY, body TEXT) DEFAULT CHARSET utf8mb4;
+INSERT INTO english_docs VALUES (1, 'database performance'), (2, 'performance audit'), (3, 'database audit'), (4, 'unrelated'), (5, NULL);
+ALTER TABLE english_docs ADD FULLTEXT INDEX idx_body(body) WITH PARSER beng;
+SELECT GROUP_CONCAT(id ORDER BY id) AS ids FROM english_docs WHERE MATCH(body) AGAINST('database performance absent');
+SELECT GROUP_CONCAT(id ORDER BY id) AS ids FROM english_docs WHERE MATCH(body) AGAINST('database database audit');
+SELECT GROUP_CONCAT(id ORDER BY id) AS ids FROM english_docs WHERE MATCH(body) AGAINST('+database -audit' IN BOOLEAN MODE);
+START TRANSACTION;
+DELETE FROM english_docs WHERE id = 2;
+INSERT INTO english_docs VALUES (6, 'database performance audit');
+SELECT GROUP_CONCAT(id ORDER BY id) AS ids FROM english_docs WHERE MATCH(body) AGAINST('database performance audit');
+ROLLBACK;
+SELECT GROUP_CONCAT(id ORDER BY id) AS ids FROM english_docs WHERE MATCH(body) AGAINST('database performance audit');
+DROP DATABASE fts_parser_and_limit;

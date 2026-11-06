@@ -1,0 +1,63 @@
+DROP DATABASE IF EXISTS fts_parser_and_limit;
+CREATE DATABASE fts_parser_and_limit;
+USE fts_parser_and_limit;
+SET NAMES utf8mb4;
+SELECT TOKENIZE('研究生命起源 ＡＢＣ１２３ 三千六百五十天 한글 しんぶん 🚀', 'ik', '[{"output":"all"}]');
+TOKENIZE('研究生命起源 ＡＢＣ１２３ 三千六百五十天 한글 しんぶん 🚀', 'ik', '[{"output":"all"}]')
+{"tokens": [{"三千六百五十": 1}, {"天": 1}, {"ａｂｃ１２３": 1}, {"研究": 1}, {"起源": 1}, {"し": 1}, {"한": 1}, {"ん": 2}, {"글": 1}, {"生命": 1}, {"ぶ": 1}], "doc_len": 12}
+SELECT TOKENIZE('研究生命起源 研究生 人工智能', 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]');
+TOKENIZE('研究生命起源 研究生 人工智能', 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"max_word"}]}]')
+{"tokens": [{"人工": 1}, {"研究生": 2}, {"研究": 2}, {"起源": 1}, {"人工智能": 1}, {"智能": 1}, {"生": 1}, {"生命": 1}], "doc_len": 10}
+SELECT TOKENIZE('THE Database, database and audit; A+B Café ÉTÉ. 中文', 'beng', '[{"output":"all"}]');
+TOKENIZE('THE Database, database and audit; A+B Café ÉTÉ. 中文', 'beng', '[{"output":"all"}]')
+{"tokens": [{"café": 1}, {"audit": 1}, {"database": 2}, {"中文": 1}, {"and": 1}, {"été": 1}], "doc_len": 7}
+CREATE TABLE docs (id INT PRIMARY KEY, tag INT, body TEXT) DEFAULT CHARSET utf8mb4;
+INSERT INTO docs VALUES (1, NULL, '数据库 全文索引'), (2, 9, '全文索引 全文索引'), (3, 2, '全文索引 调优'), (4, NULL, '分词与排序'), (5, 8, NULL);
+ALTER TABLE docs ADD FULLTEXT INDEX idx_body(body) WITH PARSER ik;
+SELECT id, MATCH(body) AGAINST('全文索引') AS score FROM docs WHERE MATCH(body) AGAINST('全文索引') ORDER BY score DESC, id;
+id	score
+2	0.44354838709677424
+1	0.37162162162162166
+3	0.3503184713375797
+SELECT COUNT(*) FROM (SELECT id FROM docs WHERE MATCH(body) AGAINST('全文索引') LIMIT 2 OFFSET 1) AS limited;
+COUNT(*)
+2
+SELECT COUNT(*) FROM (SELECT id FROM docs WHERE MATCH(body) AGAINST('不存在的串嗄') LIMIT 4 OFFSET 10) AS limited;
+COUNT(*)
+0
+SELECT COUNT(*) FROM (SELECT id FROM docs WHERE MATCH(body) AGAINST('全文索引') LIMIT 0) AS limited;
+COUNT(*)
+0
+SELECT COUNT(tag) FROM (SELECT id, tag FROM docs WHERE MATCH(body) AGAINST('全文索引') ORDER BY id LIMIT 2) AS limited;
+COUNT(tag)
+1
+SELECT COUNT(*) FROM (SELECT id FROM docs WHERE MATCH(body) AGAINST('全文索引') ORDER BY id LIMIT 2) AS limited WHERE id > 2;
+COUNT(*)
+0
+SELECT id FROM (SELECT id FROM docs WHERE MATCH(body) AGAINST('全文索引') LIMIT 2) AS limited ORDER BY id;
+id
+1
+2
+CREATE TABLE english_docs (id INT PRIMARY KEY, body TEXT) DEFAULT CHARSET utf8mb4;
+INSERT INTO english_docs VALUES (1, 'database performance'), (2, 'performance audit'), (3, 'database audit'), (4, 'unrelated'), (5, NULL);
+ALTER TABLE english_docs ADD FULLTEXT INDEX idx_body(body) WITH PARSER beng;
+SELECT GROUP_CONCAT(id ORDER BY id) AS ids FROM english_docs WHERE MATCH(body) AGAINST('database performance absent');
+ids
+1,2,3
+SELECT GROUP_CONCAT(id ORDER BY id) AS ids FROM english_docs WHERE MATCH(body) AGAINST('database database audit');
+ids
+1,2,3
+SELECT GROUP_CONCAT(id ORDER BY id) AS ids FROM english_docs WHERE MATCH(body) AGAINST('+database -audit' IN BOOLEAN MODE);
+ids
+1
+START TRANSACTION;
+DELETE FROM english_docs WHERE id = 2;
+INSERT INTO english_docs VALUES (6, 'database performance audit');
+SELECT GROUP_CONCAT(id ORDER BY id) AS ids FROM english_docs WHERE MATCH(body) AGAINST('database performance audit');
+ids
+1,3,6
+ROLLBACK;
+SELECT GROUP_CONCAT(id ORDER BY id) AS ids FROM english_docs WHERE MATCH(body) AGAINST('database performance audit');
+ids
+1,2,3
+DROP DATABASE fts_parser_and_limit;

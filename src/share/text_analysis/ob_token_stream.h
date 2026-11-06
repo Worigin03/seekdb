@@ -130,6 +130,7 @@ public:
   virtual void reset() override;
   virtual void reuse() override;
   virtual int get_next(ObDatum &next_token, int64_t &token_freq) override;
+  int get_next(ObDatum &next_token, int64_t &token_freq, ObIAllocator &output_allocator);
 private:
   ObArenaAllocator norm_allocator_;
 };

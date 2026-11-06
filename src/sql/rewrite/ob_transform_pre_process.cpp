@@ -178,8 +178,9 @@ int ObTransformPreProcess::transform_one_stmt(common::ObIArray<ObParentDMLStmt> 
       }
     }
     if (OB_SUCC(ret)) {
+      ObDMLStmt *parent = parent_stmts.empty() ? nullptr : parent_stmts.at(parent_stmts.count() - 1).stmt_;
       if (stmt->get_match_exprs().count() > 0 &&
-          OB_FAIL(preserve_order_for_fulltext_search(stmt, is_happened))) {
+          OB_FAIL(preserve_order_for_fulltext_search(stmt, parent, is_happened))) {
       } else {
         trans_happened |= is_happened;
       }
@@ -3788,9 +3789,61 @@ int ObTransformPreProcess::do_flatten_conditions(ObDMLStmt *stmt, ObIArray<ObRaw
   return ret;
 }
 
+namespace
+{
+// A scalar COUNT(*) over a limited view consumes only its cardinality.
+// Keep the order for any consumer that can observe which rows survived.
+bool can_remove_fts_order_for_count(const ObSelectStmt &outer,
+                                    const TableItem &view,
+                                    const ObSelectStmt &inner,
+                                    const ObMatchFunRawExpr &match)
+{
+  if (!view.is_generated_table() || view.ref_query_ != &inner
+      || !outer.is_single_table_stmt()
+      || outer.get_from_item(0).is_joined_
+      || outer.get_from_item(0).table_id_ != view.table_id_
+      || outer.get_condition_size() != 0 || outer.has_having()
+      || !outer.is_scala_group_by() || outer.has_distinct() || outer.has_order_by()
+      || outer.get_select_item_size() != 1 || outer.get_aggr_item_size() != 1
+      || outer.has_subquery() || outer.has_for_update() || outer.is_set_stmt()
+      || !inner.has_limit() || inner.is_fetch_with_ties() || inner.is_calc_found_rows()
+      || nullptr != inner.get_limit_percent_expr() || inner.has_for_update()
+      || inner.get_table_size() != 1 || !inner.get_table_item(0)->is_basic_table()
+      || inner.get_match_exprs().count() != 1 || inner.is_contains_assignment()
+      || inner.get_condition_size() != 1 || inner.get_aggr_item_size() != 0
+      || inner.has_group_by() || inner.has_having() || inner.has_distinct()
+      || inner.is_set_stmt() || inner.has_window_function() || inner.has_subquery()) {
+    return false;
+  }
+
+  const ObAggFunRawExpr *count = outer.get_aggr_item(0);
+  const ObRawExpr *predicate = inner.get_condition_exprs().at(0);
+  if (OB_ISNULL(count) || outer.get_select_item(0).expr_ != count
+      || T_FUN_COUNT != count->get_expr_type() || count->is_param_distinct()
+      || count->get_real_param_count() != 0 || match.is_es_match()
+      || ObMatchAgainstMode::NATURAL_LANGUAGE_MODE != match.get_mode_flag()
+      || OB_ISNULL(predicate)
+      || T_OP_BOOL != predicate->get_expr_type() || predicate->get_param_count() != 1
+      || predicate->get_param_expr(0) != &match) {
+    return false;
+  }
+
+  for (int64_t i = 0; i < inner.get_select_item_size(); ++i) {
+    const ObRawExpr *expr = inner.get_select_item(i).expr_;
+    if (OB_ISNULL(expr) || (!expr->is_column_ref_expr() && !expr->is_const_expr())
+        || nullptr != outer.get_column_item_by_id(view.table_id_, OB_APP_MIN_COLUMN_ID + i)) {
+      return false;
+    }
+  }
+  return true;
+}
+} // namespace
+
 // full-text index queries on a single base table are processed with order preservation. 
 // (Order is not preserved in multi-table join scenarios.)
-int ObTransformPreProcess::preserve_order_for_fulltext_search(ObDMLStmt *stmt, bool& trans_happened)
+int ObTransformPreProcess::preserve_order_for_fulltext_search(ObDMLStmt *stmt,
+                                                              ObDMLStmt *parent,
+                                                              bool &trans_happened)
 {
   int ret = OB_SUCCESS;
   trans_happened = false;
@@ -3937,10 +3990,28 @@ int ObTransformPreProcess::preserve_order_for_fulltext_search(ObDMLStmt *stmt, b
     }
   }
   if (OB_SUCC(ret) && nullptr != match_expr && !static_cast<ObMatchFunRawExpr*>(match_expr)->is_es_match()) {
-    OrderItem item(match_expr, default_desc_direction());
-    if (OB_FAIL(stmt->add_order_item(item))) {
+    if (nullptr != parent && parent->is_select_stmt() && stmt->is_select_stmt()
+        && parent->get_table_size() == 1 && nullptr != parent->get_table_item(0)
+        && can_remove_fts_order_for_count(*static_cast<ObSelectStmt *>(parent),
+                                           *parent->get_table_item(0),
+                                           *static_cast<ObSelectStmt *>(stmt),
+                                           *static_cast<ObMatchFunRawExpr *>(match_expr))) {
+      ObSelectStmt &inner = *static_cast<ObSelectStmt *>(stmt);
+      ObSqlBitSet<> removed;
+      for (int64_t i = 0; OB_SUCC(ret) && i < inner.get_select_item_size(); ++i) {
+        ret = removed.add_member(i);
+      }
+      if (FAILEDx(ObTransformUtils::remove_select_items(ctx_, parent->get_table_item(0)->table_id_,
+                                                        inner, *parent, removed))) {
+      } else {
+        trans_happened = true;
+      }
     } else {
-      trans_happened = true;
+      OrderItem item(match_expr, default_desc_direction());
+      if (OB_FAIL(stmt->add_order_item(item))) {
+      } else {
+        trans_happened = true;
+      }
     }
   } 
   return ret;

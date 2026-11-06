@@ -35,6 +35,13 @@ int ObTextDaaTIter::init(const ObTextDaaTParam &param)
   } else {
     mode_flag_ = param.mode_flag_;
     function_lookup_mode_ = param.function_lookup_mode_;
+    const sql::ObDatumMeta &id_meta = iter_param_->id_proj_expr_->datum_meta_;
+    use_small_union_ = sql::ObMatchAgainstMode::NATURAL_LANGUAGE_MODE == mode_flag_
+        && !function_lookup_mode_ && !iter_param_->need_project_relevance()
+        && !iter_param_->need_filter() && nullptr == iter_param_->dim_weights_
+        && param.minimum_should_match_ <= 1
+        && (ObUInt64Type == id_meta.type_ || (ObVarcharType == id_meta.type_ && CS_TYPE_BINARY == id_meta.cs_type_))
+        && dim_iters_->count() <= ObSRSimpleMerger::USE_SIMPLE_MERGER_MAX_TABLE_CNT;
   }
   return ret;
 }
@@ -74,6 +81,58 @@ int ObTextDaaTIter::pre_process()
   } else if (iter_param_->need_project_relevance()) {
     if (OB_FAIL(bm25_param_estimator_.do_estimation(*iter_param_->eval_ctx_))) {
     }
+  }
+  return ret;
+}
+
+int ObTextDaaTIter::do_one_merge_round(int64_t &count)
+{
+  if (!use_small_union_) {
+    return ObSRDaaTIterImpl::do_one_merge_round(count);
+  }
+
+  int ret = OB_SUCCESS;
+  // Advance only streams that supplied the previous minimum. The remaining
+  // heads are still valid in their iterator-owned posting batches.
+  for (int64_t i = 0; OB_SUCC(ret) && i < next_round_cnt_; ++i) {
+    const int64_t idx = next_round_iter_idxes_[i];
+    auto *iter = static_cast<ObTextRetrievalDaaTTokenIter *>(dim_iters_->at(idx));
+    if (OB_FAIL(iter->get_next_row())) {
+      if (OB_ITER_END == ret) {
+        iter_domain_ids_[idx] = nullptr;
+        ret = OB_SUCCESS;
+      }
+    } else if (OB_FAIL(iter->get_curr_id(iter_domain_ids_[idx]))) {
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    next_round_cnt_ = 0;
+    const ObDatum *minimum = nullptr;
+    const bool integer_id = ObUInt64Type == iter_param_->id_proj_expr_->datum_meta_.type_;
+    for (int64_t i = 0; i < dim_iters_->count(); ++i) {
+      const ObDatum *head = iter_domain_ids_[i];
+      if (nullptr != head) {
+        int cmp = -1;
+        if (nullptr != minimum) {
+          if (integer_id) {
+            const uint64_t id = head->get_uint();
+            const uint64_t min_id = minimum->get_uint();
+            cmp = id < min_id ? -1 : (id == min_id ? 0 : 1);
+          } else {
+            cmp = head->get_string().compare(minimum->get_string());
+          }
+        }
+        if (cmp < 0) {
+          minimum = head;
+          next_round_cnt_ = 0;
+        }
+        if (cmp <= 0) {
+          next_round_iter_idxes_[next_round_cnt_++] = i;
+        }
+      }
+    }
+    ret = nullptr == minimum ? OB_ITER_END : cache_result(count, *minimum, 1.0);
   }
   return ret;
 }

@@ -470,6 +470,7 @@ int ObDASLegacyTRMergeIter::init_daat_iter_param(ObTextDaaTParam &iter_param)
 {
   int ret = OB_SUCCESS;
   iter_param.dim_iters_ = &dim_iters_;
+  iter_param.minimum_should_match_ = ir_rtdef_->minimum_should_match_;
   iter_param.base_param_ = &sr_iter_param_;
   iter_param.allocator_ = &myself_allocator_;
   iter_param.mode_flag_ = ir_ctdef_->mode_flag_;

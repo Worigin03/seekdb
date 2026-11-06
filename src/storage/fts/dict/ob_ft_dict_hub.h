@@ -17,107 +17,31 @@
 #ifndef _OCEANBASE_STORAGE_FTS_DICT_OB_FT_DICT_HUB_H_
 #define _OCEANBASE_STORAGE_FTS_DICT_OB_FT_DICT_HUB_H_
 
-#include "lib/charset/ob_charset.h"
-#include "lib/lock/ob_bucket_lock.h"
+#include <atomic>
+#include <mutex>
+
 #include "storage/fts/dict/ob_ft_dict_def.h"
 
 namespace oceanbase
 {
 namespace storage
 {
-// typedef uint64_t ObFTTableID;
-// typedef ObFTTableID ObFTDictTableID;
+class ObIFTDict;
 
-class ObFTDictInfo
-{
-public:
-  ObFTDictInfo()
-      : name_(""),
-        type_(ObFTDictType::DICT_TYPE_INVALID),
-        charset_(CHARSET_INVALID),
-        version_(0),
-        range_count_(0)
-  {
-  }
-
-public:
-  char name_[2048]; // for now
-  ObFTDictType type_;
-  ObCharsetType charset_;
-  int64_t version_; // in memory
-  int32_t range_count_;
-};
-
-struct ObFTDictInfoKey
-{
-public:
-  ObFTDictInfoKey()
-      : type_(static_cast<uint64_t>(ObFTDictType::DICT_TYPE_INVALID))
-  {
-  } // default constructor
-  ObFTDictInfoKey(const uint64_t type)
-      : type_(type)
-  {
-  }
-  int hash(uint64_t &hash_value) const
-  {
-    int ret = OB_SUCCESS;
-    hash_value = hash();
-    return ret;
-  }
-
-  uint64_t hash() const
-  {
-    uint64_t hash = 0;
-    hash = common::murmurhash(&type_, sizeof(int64_t), hash);
-    return hash;
-  }
-
-  bool operator==(const ObFTDictInfoKey &other) const
-  {
-    return type_ == other.type_;
-  }
-
-  int compare(const ObFTDictInfoKey &other) const
-  {
-    int ret = 0;
-    if (0 == ret) {
-      ret = type_ - other.type_;
-    }
-    return ret;
-  }
-
-private:
-  uint64_t type_;
-  // name
-};
-
-class ObFTCacheRangeContainer;
 class ObFTDictHub
 {
 public:
-  ObFTDictHub() : is_inited_(false), dict_map_(), rw_dict_lock_() {}
-  ~ObFTDictHub() {}
+  ObFTDictHub() : builtin_dicts_{nullptr, nullptr} {}
+  ~ObFTDictHub();
 
-  int init();
-
-  int destroy();
-
-  int build_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
-
-  int load_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
+  // These two dictionaries come from compiled-in data. The hub owns the
+  // immutable wrappers and their cache pins until FTS shutdown.
+  int get_builtin_ik_dict(ObFTDictType type, const ObIFTDict *&dict);
 
 private:
-  int get_dict_info(const ObFTDictInfoKey &key, ObFTDictInfo &info);
-
-  int put_dict_info(const ObFTDictInfoKey &key, const ObFTDictInfo &info);
-
-
-private:
-  bool is_inited_;
-  // holds info of dict
-  hash::ObHashMap<ObFTDictInfoKey, ObFTDictInfo> dict_map_;
-  ObBucketLock rw_dict_lock_;
+  struct BuiltinDict;
+  std::mutex build_mutex_;
+  std::atomic<BuiltinDict *> builtin_dicts_[2];
 };
 
 } //  namespace storage
