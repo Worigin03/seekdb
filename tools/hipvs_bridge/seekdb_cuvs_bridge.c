@@ -80,8 +80,8 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
   h->ip->intermediate_graph_degree = 256;
-  // Keep V5's graph connectivity while reducing the NN-Descent iteration cap.
-  h->ip->nn_descent_niter = 80;
+  // Keep V5's graph degrees while reducing the NN-Descent iteration cap.
+  h->ip->nn_descent_niter = 24;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   h->n = n; h->dim = dim;
@@ -115,6 +115,11 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
       if (required_itopk < 512) required_itopk = 512;
       if (h->sp->itopk_size < required_itopk) h->sp->itopk_size = required_itopk;
       h->sp->search_width = 4;
+      // Use multiple blocks for a single query with the standard candidate budget.
+      // Reset both settings because the same index can also serve batch searches.
+      const bool use_multi_cta = nq == 1 && h->sp->itopk_size == 512;
+      h->sp->algo = use_multi_cta ? MULTI_CTA : SINGLE_CTA;
+      h->sp->max_iterations = use_multi_cta ? 48 : 0;
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, h->sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
