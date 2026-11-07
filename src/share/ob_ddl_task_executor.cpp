@@ -15,7 +15,9 @@
  */
 
 #include "ob_ddl_task_executor.h"
+#include "lib/alloc/alloc_func.h"
 #include "lib/ob_running_mode.h"
+#include "lib/utility/utility.h"
 #include "lib/thread/ob_thread_name.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "share/rc/ob_server_runtime.h"
@@ -350,7 +352,13 @@ int ObDDLLocalBuilder::push_task(ObAsyncTask &task)
 
 int64_t ObDDLLocalBuilder::get_thread_cnt_() const
 {
-  return lib::is_mini_mode() ? 1 : 16;
+  if (!lib::is_mini_mode()) {
+    return 16;
+  }
+  // Local builds of independent auxiliary tables can overlap. Keep a
+  // single worker when the process has little CPU or memory headroom.
+  const int64_t min_parallel_build_memory = 4LL << 30;
+  return get_cpu_num() >= 8 && lib::get_memory_budget() >= min_parallel_build_memory ? 2 : 1;
 }
 
 }  // end namespace share
