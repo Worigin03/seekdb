@@ -363,17 +363,6 @@ int ObFTParseHelper::segment(
     int64_t &doc_length,
     ObFTWordMap &words) const
 {
-  return segment(meta, fulltext, fulltext_len, doc_length, words, false);
-}
-
-int ObFTParseHelper::segment(
-    const ObObjMeta &meta,
-    const char *fulltext,
-    const int64_t fulltext_len,
-    int64_t &doc_length,
-    ObFTWordMap &words,
-    const bool allow_input_alias) const
-{
   int ret = OB_SUCCESS;
   const ObCharsetInfo *cs = nullptr;
   ObCollationType type = meta.get_collation_type();
@@ -387,8 +376,7 @@ int ObFTParseHelper::segment(
     ret = OB_ERR_UNEXPECTED;
   } else {
     words.reuse();
-    const ObString borrowable_input = allow_input_alias ? ObString(fulltext_len, fulltext) : ObString();
-    ObAddWord add_word(parser_property_, meta, add_word_flag_, *allocator_, words, borrowable_input);
+    ObAddWord add_word(parser_property_, meta, add_word_flag_, *allocator_, words);
     if (OB_FAIL(segment(
                     parser_property_,
                     parser_name_.get_parser_version(),
