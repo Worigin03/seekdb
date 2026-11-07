@@ -136,7 +136,7 @@ def benchmark(args):
             sql(
                 f"create vector index idx on {table}(v) with "
                 f"(distance=l2,type=hnsw,lib={backend},"
-                "m=16,ef_construction=200,ef_search=200);"
+                "m=16,ef_construction=200,ef_search=64);"
             )
             ddl_seconds = time.perf_counter() - start
             # The contest build interval ends after, not before, the first query.

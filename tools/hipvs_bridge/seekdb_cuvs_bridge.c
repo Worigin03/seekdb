@@ -78,9 +78,10 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
 
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
   h->ip->build_algo = NN_DESCENT;
-  h->ip->graph_degree = 64;
-  h->ip->intermediate_graph_degree = 128;
-  h->ip->nn_descent_niter = 20;
+  h->ip->graph_degree = 128;
+  h->ip->intermediate_graph_degree = 256;
+  // Keep V5's graph connectivity while reducing the NN-Descent iteration cap.
+  h->ip->nn_descent_niter = 80;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   h->n = n; h->dim = dim;
@@ -111,7 +112,7 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     if (!h->sp && cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) { rc=14; goto done; }
     {
       size_t required_itopk = (size_t)topk * 4;
-      if (required_itopk < 256) required_itopk = 256;
+      if (required_itopk < 512) required_itopk = 512;
       if (h->sp->itopk_size < required_itopk) h->sp->itopk_size = required_itopk;
       h->sp->search_width = 4;
     }

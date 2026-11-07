@@ -145,8 +145,10 @@ official score: formal scoring pairs the candidate with the frozen V5 baseline
 in the same round. Use the same script and data on separate clean checkouts for
 a local approximation of that paired comparison.
 
-The bridge uses CAGRA with graph degree 64, intermediate graph degree 128,
-and 20 NN-Descent iterations. Search parameters and device scratch buffers are
+The bridge uses CAGRA with graph degree 128, intermediate graph degree 256,
+and an 80-iteration NN-Descent cap. The search candidate count has a floor
+of 512. The SQL benchmark uses `ef_search=64` to match the contest DDL.
+Search parameters and device scratch buffers are
 reused per index; the persistence test grows and reuses them across Top-10 and
 Top-100 calls. The validation runner uses the source checkout
 containing the script. Set `BENCH_SOURCE_DIR` to benchmark another local
