@@ -46,14 +46,7 @@ int ObTextDaaTIter::init(const ObTextDaaTParam &param)
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(ObSRDaaTIterImpl::init(*param.base_param_, *param.dim_iters_,
                                             *param.allocator_, *param.relevance_collector_))) {
-  } else if (use_small_union_ && ObUInt64Type == param.base_param_->id_proj_expr_->datum_meta_.type_
-      && FALSE_IT(small_union_ids_.set_allocator(param.allocator_))) {
-  } else if (use_small_union_ && ObUInt64Type == param.base_param_->id_proj_expr_->datum_meta_.type_
-      && OB_FAIL(small_union_ids_.init(OB_MAX(param.base_param_->eval_ctx_->max_batch_size_,
-                                              param.base_param_->max_batch_size_)))) {
-  } else if (use_small_union_ && ObUInt64Type == param.base_param_->id_proj_expr_->datum_meta_.type_
-      && OB_FAIL(small_union_ids_.prepare_allocate(OB_MAX(param.base_param_->eval_ctx_->max_batch_size_,
-                                                          param.base_param_->max_batch_size_)))) {
+  } else if (!need_buffered_domain_ids_ && OB_FAIL(init_posting_batches())) {
   } else if (param.base_param_->need_project_relevance()
       && OB_FAIL(bm25_param_estimator_.init(param.bm25_param_est_ctx_))) {
   }
@@ -64,6 +57,9 @@ void ObTextDaaTIter::reset()
 {
   bm25_param_estimator_.reset();
   small_union_ids_.reset();
+  posting_ids_.reset();
+  posting_batch_size_ = 0;
+  active_postings_ = pending_postings_ = 0;
   // this class can know the type of dim_iters_, but ObSRDaaTIterImpl maybe not
   if (OB_NOT_NULL(dim_iters_)) {
     for (int64_t i = 0; i < dim_iters_->count(); ++i) {
@@ -86,6 +82,9 @@ void ObTextDaaTIter::reuse(const bool switch_tablet)
     }
   }
   ObSRDaaTIterImpl::reuse(switch_tablet);
+  if (!need_buffered_domain_ids_) {
+    rewind_posting_batches();
+  }
 }
 
 int ObTextDaaTIter::pre_process()
@@ -95,6 +94,52 @@ int ObTextDaaTIter::pre_process()
     ret = OB_ITER_END;
   } else if (iter_param_->need_project_relevance()) {
     if (OB_FAIL(bm25_param_estimator_.do_estimation(*iter_param_->eval_ctx_))) {
+    }
+  }
+  return ret;
+}
+
+int ObTextDaaTIter::init_posting_batches()
+{
+  int ret = OB_SUCCESS;
+  const int64_t output_capacity = OB_MAX(iter_param_->eval_ctx_->max_batch_size_, iter_param_->max_batch_size_);
+  posting_batch_size_ = OB_MAX(iter_param_->eval_ctx_->max_batch_size_, 1);
+  const int64_t input_capacity = posting_batch_size_ * dim_iters_->count();
+  small_union_ids_.set_allocator(iter_allocator_);
+  posting_ids_.set_allocator(iter_allocator_);
+  if (OB_FAIL(small_union_ids_.init(output_capacity))) {
+  } else if (OB_FAIL(small_union_ids_.prepare_allocate(output_capacity))) {
+  } else if (input_capacity > 0 && OB_FAIL(posting_ids_.init(input_capacity))) {
+  } else if (input_capacity > 0 && OB_FAIL(posting_ids_.prepare_allocate(input_capacity))) {
+  } else {
+    rewind_posting_batches();
+  }
+  return ret;
+}
+
+void ObTextDaaTIter::rewind_posting_batches()
+{
+  active_postings_ = pending_postings_ = (1U << dim_iters_->count()) - 1;
+}
+
+int ObTextDaaTIter::refill_posting_batches(const int64_t capacity)
+{
+  int ret = OB_SUCCESS;
+  while (OB_SUCC(ret) && pending_postings_ != 0) {
+    const int64_t idx = __builtin_ctz(pending_postings_);
+    const unsigned bit = 1U << idx;
+    pending_postings_ &= ~bit;
+    auto *iter = static_cast<ObTextRetrievalDaaTTokenIter *>(dim_iters_->at(idx));
+    uint64_t *ids = &posting_ids_[idx * posting_batch_size_];
+    int64_t count = 0;
+    if (OB_FAIL(iter->read_uint_ids(ids, capacity, count))) {
+      if (OB_ITER_END == ret) {
+        active_postings_ &= ~bit;
+        ret = OB_SUCCESS;
+      }
+    } else {
+      postings_[idx].next_ = ids;
+      postings_[idx].end_ = ids + count;
     }
   }
   return ret;
@@ -110,33 +155,48 @@ int ObTextDaaTIter::merge_next_rows(const int64_t capacity, int64_t &count)
   const common::ObLimitParam &limit = *iter_param_->limit_param_;
   const bool has_limit = limit.is_valid();
   const int64_t offset = has_limit ? limit.offset_ : 0;
-  const int64_t dim_count = dim_iters_->count();
-  // Keep the merge in this loop and project once per batch. Heads point to
-  // iterator-owned buffers and are advanced only after their ID is emitted.
+  // The scan expression frame is shared by the term scans. Keep one owned
+  // batch per term and fetch again only after consuming that term's batch.
   while (OB_SUCC(ret) && count < capacity) {
-    if (OB_FAIL(advance_small_union_heads())) {
+    if (pending_postings_ != 0) {
+      int64_t fetch_count = posting_batch_size_;
+      if (has_limit) {
+        fetch_count = MIN(fetch_count, limit.limit_ - output_row_cnt_);
+        const int64_t offset_remaining = MAX(0, offset - input_row_cnt_);
+        fetch_count += MIN(posting_batch_size_ - fetch_count, offset_remaining);
+      }
+      if (OB_FAIL(refill_posting_batches(fetch_count))) {
+        break;
+      }
+    }
+    if (active_postings_ == 0) {
+      ret = OB_ITER_END;
       break;
     }
 
     uint64_t min_id = UINT64_MAX;
-    next_round_cnt_ = 0;
-    for (int64_t i = 0; i < dim_count; ++i) {
-      const ObDatum *head = iter_domain_ids_[i];
-      if (nullptr != head) {
-        const uint64_t id = head->get_uint();
-        if (id < min_id) {
-          min_id = id;
-          next_round_cnt_ = 0;
-        }
-        if (id == min_id) {
-          next_round_iter_idxes_[next_round_cnt_++] = i;
-        }
+    unsigned matches = 0;
+    for (unsigned active = active_postings_; active != 0; active &= active - 1) {
+      const int64_t idx = __builtin_ctz(active);
+      const uint64_t id = *postings_[idx].next_;
+      if (id < min_id) {
+        min_id = id;
+        matches = 0;
+      }
+      if (id == min_id) {
+        matches |= 1U << idx;
       }
     }
+    while (matches != 0) {
+      const int64_t idx = __builtin_ctz(matches);
+      PostingBatch &posting = postings_[idx];
+      if (++posting.next_ == posting.end_) {
+        pending_postings_ |= 1U << idx;
+      }
+      matches &= matches - 1;
+    }
 
-    if (0 == next_round_cnt_) {
-      ret = OB_ITER_END;
-    } else if (++input_row_cnt_ > offset) {
+    if (++input_row_cnt_ > offset) {
       small_union_ids_[count++] = min_id;
       ++output_row_cnt_;
       if (has_limit && output_row_cnt_ >= limit.limit_) {

@@ -75,6 +75,20 @@ protected:
   bool use_small_union_;
   ObFixedArray<uint64_t, ObIAllocator> small_union_ids_;
 private:
+  struct PostingBatch
+  {
+    const uint64_t *next_ = nullptr;
+    const uint64_t *end_ = nullptr;
+  };
+  int init_posting_batches();
+  int refill_posting_batches(const int64_t capacity);
+  void rewind_posting_batches();
+
+  PostingBatch postings_[ObSRSimpleMerger::USE_SIMPLE_MERGER_MAX_TABLE_CNT];
+  ObFixedArray<uint64_t, ObIAllocator> posting_ids_;
+  int64_t posting_batch_size_ = 0;
+  unsigned active_postings_ = 0;
+  unsigned pending_postings_ = 0;
   DISALLOW_COPY_AND_ASSIGN(ObTextDaaTIter);
 };
 
