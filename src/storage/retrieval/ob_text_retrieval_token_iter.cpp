@@ -497,40 +497,6 @@ int ObTextRetrievalDaaTTokenIter::get_next_row() {
   return ret;
 }
 
-int ObTextRetrievalDaaTTokenIter::read_uint_ids(uint64_t *ids, const int64_t capacity, int64_t &count)
-{
-  int ret = OB_SUCCESS;
-  count = 0;
-  if (OB_UNLIKELY(!is_inited_ || nullptr != relevance_expr_
-      || ObUInt64Type != inv_scan_domain_id_col_->datum_meta_.type_)) {
-    ret = OB_ERR_UNEXPECTED;
-  }
-  while (OB_SUCC(ret) && 0 == count) {
-    int64_t fetched = 0;
-    if (eval_ctx_->is_vectorized()) {
-      ret = token_iter_->get_next_batch(capacity, fetched);
-    } else if (OB_SUCC(ret = token_iter_->get_next_row())) {
-      fetched = 1;
-    }
-    if (OB_SUCC(ret)) {
-      const ObDatumVector &datums = inv_scan_domain_id_col_->locate_expr_datumvector(*eval_ctx_);
-      const sql::ObBitVector &skip = *token_iter_->get_skip();
-      for (int64_t i = 0; OB_SUCC(ret) && i < fetched; ++i) {
-        if (!skip.at(i)) {
-          const ObDatum &datum = *datums.at(i);
-          if (OB_UNLIKELY(datum.is_null())) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("null integer document id in posting", K(ret));
-          } else {
-            ids[count++] = datum.get_uint();
-          }
-        }
-      }
-    }
-  }
-  return ret;
-}
-
 int ObTextRetrievalDaaTTokenIter::save_relevances_and_docids()
 {
   int ret = OB_SUCCESS;
