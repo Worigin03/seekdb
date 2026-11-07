@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import random
 import re
 import statistics
@@ -10,6 +11,49 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+
+
+def log_identity(stat):
+    return stat.st_dev, stat.st_ino
+
+
+def log_events_since(path, checkpoint, markers):
+    """Read matching lines from the checkpoint through any retained rotations."""
+    origin = log_identity(checkpoint)
+    rotated_name = re.compile(re.escape(path.name) + r"\.\d{17}")
+    for _ in range(3):
+        started = False
+        events = []
+        try:
+            active = log_identity(path.stat())
+            files = []
+            if active != origin:
+                # Seekdb renames the old file to <name>.YYYYMMDDhhmmssmmm.
+                files = sorted(p for p in path.parent.iterdir() if rotated_name.fullmatch(p.name))
+            for logfile in (*files, path):
+                with logfile.open("rb") as log:
+                    if not started:
+                        info = os.fstat(log.fileno())
+                        if log_identity(info) != origin:
+                            continue
+                        if info.st_size < checkpoint.st_size:
+                            raise RuntimeError(f"Observer log was truncated during the trial: {path}")
+                        log.seek(checkpoint.st_size)
+                        started = True
+                    events.extend(
+                        line.decode("utf-8", errors="replace").strip()
+                        for line in log if any(marker in line for marker in markers)
+                    )
+            if log_identity(path.stat()) != active:
+                continue
+        except FileNotFoundError:
+            # The active name briefly disappears between rename and open.
+            time.sleep(0.05)
+            continue
+        if not started:
+            raise RuntimeError(f"Observer log checkpoint was recycled during the trial: {path}")
+        return events
+    raise RuntimeError(f"Observer log kept rotating while reading the trial: {path}")
 
 
 def benchmark(args):
@@ -57,19 +101,28 @@ def benchmark(args):
     if sql(f"select count(*) from {base};") != [str(args.rows)]:
         raise RuntimeError("source row count differs from the requested row count")
 
-    probes = [sample() for _ in range(args.probes)]
+    recall_probes = [sample() for _ in range(args.probes)]
+    query_probes = [sample() for _ in range(args.queries)]
 
-    def neighbors(table, mode):
+    def neighbors(table, mode, topk, probe_values):
         rows = sql("\n".join(
-            f"select id from {table} order by l2_distance(v,'{probe}') {mode} limit 10;"
-            for probe in probes
+            f"select id from {table} order by l2_distance(v,'{probe}') {mode} limit {topk};"
+            for probe in probe_values
         ))
-        groups = [set(rows[i:i + 10]) for i in range(0, len(rows), 10)]
-        if len(rows) != args.probes * 10 or any(len(group) != 10 for group in groups):
-            raise RuntimeError(f"expected 10 unique results per probe from {table}")
+        try:
+            rows = [int(row) for row in rows]
+        except ValueError as error:
+            raise RuntimeError(f"non-integer neighbor ID returned by {table}") from error
+        if any(row < 0 or row >= args.rows for row in rows):
+            raise RuntimeError(f"out-of-range neighbor ID returned by {table}")
+        groups = [rows[i:i + topk] for i in range(0, len(rows), topk)]
+        if (len(rows) != len(probe_values) * topk
+                or any(len(group) != topk or len(set(group)) != topk for group in groups)):
+            raise RuntimeError(f"expected {topk} unique results per probe from {table}")
         return groups
 
-    exact = neighbors(base, "")
+    # One exact Top-100 scan supplies ordered ground truth for both recall levels.
+    exact = neighbors(base, "", 100, recall_probes)
     samples = {"vsag": [], "cuvs": []}
     for run in range(args.repeats):
         order = ("vsag", "cuvs") if run % 2 == 0 else ("cuvs", "vsag")
@@ -78,27 +131,28 @@ def benchmark(args):
             sql(f"create table {table}{table_schema}; insert into {table} select * from {base};")
             if sql(f"select count(*) from {table};") != [str(args.rows)]:
                 raise RuntimeError(f"wrong pre-DDL row count for {table}")
-            with args.log.open("r", encoding="utf-8", errors="replace") as log:
-                log.seek(0, 2)
-                start = time.perf_counter()
-                sql(
-                    f"create vector index idx on {table}(v) with "
-                    f"(distance=l2,type=hnsw,lib={backend},"
-                    "m=16,ef_construction=200,ef_search=200);"
-                )
-                seconds = time.perf_counter() - start
-                snapshot_events = [
-                    line.strip() for line in log
-                    if " serialized GPU CAGRA snapshot" in line
-                    or "GPU CAGRA build failed during snapshot serialize" in line
-                ]
-                snapshots = [
-                    line for line in snapshot_events
-                    if " serialized GPU CAGRA snapshot" in line
-                    and re.search(rf"\bn={args.rows}\b", line)
-                    and re.search(rf"\bdim32={args.dim}\b", line)
-                    and re.search(r"\bgraph_bytes=[1-9]\d*\b", line)
-                ]
+            log_start = args.log.stat()
+            start = time.perf_counter()
+            sql(
+                f"create vector index idx on {table}(v) with "
+                f"(distance=l2,type=hnsw,lib={backend},"
+                "m=16,ef_construction=200,ef_search=200);"
+            )
+            ddl_seconds = time.perf_counter() - start
+            # The contest build interval ends after, not before, the first query.
+            neighbors(table, "approximate", 10, recall_probes[:1])
+            seconds = time.perf_counter() - start
+            snapshot_events = log_events_since(
+                args.log, log_start,
+                (b" serialized GPU CAGRA snapshot", b"GPU CAGRA build failed during snapshot serialize"),
+            )
+            snapshots = [
+                line for line in snapshot_events
+                if " serialized GPU CAGRA snapshot" in line
+                and re.search(rf"\bn={args.rows}\b", line)
+                and re.search(rf"\bdim32={args.dim}\b", line)
+                and re.search(r"\bgraph_bytes=[1-9]\d*\b", line)
+            ]
             if backend == "cuvs" and not any("built=true" in line for line in snapshots):
                 events = "\n".join(snapshot_events[-5:]) or "(no CAGRA snapshot events)"
                 raise RuntimeError(
@@ -108,21 +162,64 @@ def benchmark(args):
                 )
             if backend == "vsag" and snapshots:
                 raise RuntimeError(f"unexpected GPU snapshot during CPU DDL for {table}")
-            actual = neighbors(table, "approximate")
-            recall = sum(len(want & got) for want, got in zip(exact, actual)) / (10 * args.probes)
-            result = {"ddl_seconds": seconds, "recall_at_10": recall, "gpu_snapshots": snapshots}
+
+            recalls = {}
+            query_qps = {}
+            for topk in (10, 100):
+                actual = neighbors(table, "approximate", topk, recall_probes)
+                recalls[topk] = sum(
+                    len(set(want[:topk]) & set(got))
+                    for want, got in zip(exact, actual)
+                ) / (topk * args.probes)
+                if args.queries:
+                    query_start = time.perf_counter()
+                    neighbors(table, "approximate", topk, query_probes)
+                    query_qps[topk] = args.queries / (time.perf_counter() - query_start)
+            if backend == "cuvs" and log_events_since(args.log, log_start, (b"lazily built VSAG fallback",)):
+                raise RuntimeError(f"{table}: VSAG fallback observed during the GPU trial")
+            result = {
+                "ddl_seconds": ddl_seconds,
+                "build_seconds_with_first_query": seconds,
+                "recall_at_10": recalls[10], "recall_at_100": recalls[100],
+                "query_qps": query_qps, "gpu_snapshots": snapshots,
+            }
             samples[backend].append(result)
-            print(f"{table}: DDL {seconds:.3f}s, Recall@10 {recall:.4f}", flush=True)
+            print(
+                f"{table}: DDL+first query {seconds:.3f}s, "
+                f"Recall@10 {recalls[10]:.4f}, Recall@100 {recalls[100]:.4f}"
+                + (f", QPS@10 {query_qps[10]:.2f}, QPS@100 {query_qps[100]:.2f}"
+                   if args.queries else ""),
+                flush=True,
+            )
+            # Keep the unindexed source for inspection without retaining every
+            # trial's CPU/GPU index and letting memory accumulate across rounds.
+            sql(f"set recyclebin='off'; drop table {table};")
 
     median = {
-        backend: statistics.median(run["ddl_seconds"] for run in runs)
+        backend: statistics.median(run["build_seconds_with_first_query"] for run in runs)
         for backend, runs in samples.items()
     }
-    return {
+    summary = {
         "seekdb_version": version, "database": database, "rows": args.rows,
-        "dim": args.dim, "probes": args.probes, "seed": args.seed, "runs": samples,
-        "median_ddl_seconds": median, "speedup": median["vsag"] / median["cuvs"],
+        "dim": args.dim, "probes": args.probes, "queries": args.queries,
+        "seed": args.seed, "runs": samples,
+        "median_build_seconds_with_first_query": median,
+        "speedup": median["vsag"] / median["cuvs"],
     }
+    if args.queries:
+        summary["median_query_qps"] = {
+            backend: {
+                str(topk): statistics.median(run["query_qps"][topk] for run in runs)
+                for topk in (10, 100)
+            }
+            for backend, runs in samples.items()
+        }
+        summary["query_speedup"] = {
+            str(topk): summary["median_query_qps"]["cuvs"][str(topk)]
+            / summary["median_query_qps"]["vsag"][str(topk)]
+            for topk in (10, 100)
+        }
+    return summary
 
 
 def find_observer_log(port):
@@ -176,11 +273,12 @@ if __name__ == "__main__":
     parser.add_argument("--rows", type=int, default=50_000)
     parser.add_argument("--dim", type=int, default=128)
     parser.add_argument("--repeats", type=int, default=3)
-    parser.add_argument("--probes", type=int, default=100)
+    parser.add_argument("--probes", type=int, default=100, help="exact-ground-truth recall queries")
+    parser.add_argument("--queries", type=int, default=4096, help="single-row SQL queries per Top-k QPS run; 0 disables")
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
-    if args.rows < 1000 or min(args.dim, args.repeats, args.probes) < 1:
-        parser.error("at least 1000 rows and positive dimensions, repeats, and probes are required")
+    if args.rows < 1000 or min(args.dim, args.repeats, args.probes) < 1 or args.queries < 0:
+        parser.error("at least 1000 rows, positive dimensions/repeats/probes, and nonnegative queries are required")
     if args.log is None:
         if args.host not in {"127.0.0.1", "::1", "localhost"}:
             parser.error("--log is required when the SQL host is remote")

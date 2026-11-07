@@ -66,8 +66,13 @@ if(OB_BUILD_CUVS)
       "Check HIPVS_ROOT=${hipvs_root} and HIPCC=${hipvs_compiler}.")
   endif()
 
+  get_filename_component(hipvs_bridge_directory "${hipvs_bridge_library}" DIRECTORY)
   add_library(seekdb_hipvs_bridge SHARED IMPORTED GLOBAL)
-  set_target_properties(seekdb_hipvs_bridge PROPERTIES IMPORTED_LOCATION "${hipvs_bridge_library}")
+  set_target_properties(seekdb_hipvs_bridge PROPERTIES
+    IMPORTED_LOCATION "${hipvs_bridge_library}"
+    # The evaluator starts the build-tree binary without a bridge-specific
+    # LD_LIBRARY_PATH. Propagate the actual bridge directory to final linkers.
+    INTERFACE_LINK_OPTIONS "LINKER:-rpath,${hipvs_bridge_directory}")
   if(TARGET seekdb_hipvs_bridge_build)
     add_dependencies(seekdb_hipvs_bridge seekdb_hipvs_bridge_build)
   endif()

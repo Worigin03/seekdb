@@ -61,7 +61,10 @@ build the bridge as part of the seekdb build.
 ```
 
 The SDKs default to `/opt/hipvs` and `/opt/rocm`. Set `HIPVS_ROOT` and
-`ROCM_ROOT` if they are installed elsewhere. To link an existing bridge,
+`ROCM_ROOT` if they are installed elsewhere. The build-tree seekdb binary
+records the selected bridge directory in its runtime search path, so starting
+it does not require a bridge-specific `LD_LIBRARY_PATH`. To link an existing
+bridge,
 pass its path explicitly:
 
 ```bash
@@ -124,18 +127,33 @@ Pass `--log /path/to/seekdb.log` if discovery is unavailable. By default
 each run writes a new `hnsw-build-results-<id>.json` in the working directory.
 
 The script creates a fresh benchmark database and loads identical rows into
-each test table before timing `CREATE VECTOR INDEX`. It alternates CPU and GPU
-run order and records every DDL duration, the median speedup, and Recall@10
-against an exact scan of the unindexed source. It requires a successful GPU
-graph build and snapshot in the DDL log before reporting a speedup. Keep other
-vector-index builds idle while running it so the log window belongs to the
-current test. The generated database remains available for inspection.
+each test table. Its build interval starts at `CREATE VECTOR INDEX` and ends
+only after the first fixed Top-10 query returns valid results, matching the
+contest timing boundary. It alternates CPU and GPU run order, measures
+Recall@10/100 against an exact scan of the unindexed source, checks that every
+query returns k distinct valid IDs, and runs 4096 single-row SQL statements for each
+of Top-10 and Top-100 QPS. Use `--queries 0` only for a quicker build/quality
+diagnostic. The JSON retains raw DDL time separately from the scored
+DDL-plus-first-query interval. A successful GPU graph build and snapshot in
+the DDL log are required before reporting a speedup. The script rejects a GPU
+trial if it logs a lazy VSAG fallback. Keep other vector-index builds idle
+while running it so the log window belongs to the current test. Trial tables
+are removed after each measurement; the unindexed source remains for inspection.
+
+The reported CPU/GPU ratio is the requested engineering comparison, not the
+official score: formal scoring pairs the candidate with the frozen V5 baseline
+in the same round. Use the same script and data on separate clean checkouts for
+a local approximation of that paired comparison.
 
 The bridge uses CAGRA with graph degree 64, intermediate graph degree 128,
-and 20 NN-Descent iterations. The validation runner uses the source checkout
+and 20 NN-Descent iterations. Search parameters and device scratch buffers are
+reused per index; the persistence test grows and reuses them across Top-10 and
+Top-100 calls. The validation runner uses the source checkout
 containing the script. Set `BENCH_SOURCE_DIR` to benchmark another local
-checkout or a source archive. The runner builds the bridge, starts an isolated
-seekdb instance, and writes `hnsw-build-results.json` to its artifacts directory.
+checkout or a source archive. Before building seekdb, the runner compiles the
+bridge and checks snapshot write/reload in separate processes. It then starts an
+isolated seekdb instance and writes `hnsw-build-results.json` to its artifacts
+directory alongside `persistence.log`.
 
 ```bash
 bash docs/gpu-vector-index-hipvs-cuvs/validation/run_radeon_build_benchmark.sh \

@@ -96,6 +96,23 @@ fi
 HIPVS_ROOT="$hipvs_root" ROCM_ROOT="$rocm_root" HIPCC="$hipcc" \
   bash "$bridge_source/build.sh" "$bridge"
 
+# Validate the actual bridge, including cache growth/reuse after snapshot reload,
+# before spending time on the full observer build. Use separate processes so
+# the read test cannot reuse the writer's in-memory index.
+persistence=$work/test_persistence
+"${CXX:-g++}" -std=c++17 -O2 -I"$src/tools/hipvs_bridge" \
+  "$src/tools/hipvs_bridge/test_persistence.cpp" "$bridge" \
+  -Wl,-rpath,"$(dirname "$bridge")" -o "$persistence"
+(
+  export LD_LIBRARY_PATH="$(dirname "$bridge"):$hipvs_root/lib:$rocm_root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  "$persistence" write "$work/bridge-snapshot.bin" &&
+  "$persistence" read "$work/bridge-snapshot.bin"
+) >"$work/persistence.log" 2>&1 || {
+  cat "$work/persistence.log" >&2
+  exit 1
+}
+echo "Bridge snapshot/cache checks passed: $work/persistence.log"
+
 observer=$src/build_release/src/observer/seekdb
 if [[ -n "${BENCH_PREBUILT_OBSERVER:-}" ]]; then
   observer=$(realpath "$BENCH_PREBUILT_OBSERVER")
@@ -125,6 +142,16 @@ if [[ ! -x "$observer" ]] || ! grep -aqF 'serialized GPU CAGRA snapshot' "$obser
 fi
 run=$work/run
 mkdir -p "$run/store"
+if [[ -z "${BENCH_PREBUILT_OBSERVER:-}" ]]; then
+  # A freshly built candidate must record the bridge directory in its rpath.
+  direct_bridge=$(env -u LD_LIBRARY_PATH ldd "$observer" | awk '$1 == "libseekdb_cuvs_bridge.so" && $2 == "=>" { print $3 }')
+  if [[ "$direct_bridge" != "$bridge" ]]; then
+    echo "Without LD_LIBRARY_PATH, expected bridge $bridge, loader reported: ${direct_bridge:-missing}" >&2
+    exit 1
+  fi
+fi
+# A prebuilt observer may have a different embedded rpath during parameter
+# scans, so explicitly select the just-built bridge for the actual benchmark.
 export LD_LIBRARY_PATH="$(dirname "$bridge"):$hipvs_root/lib:$rocm_root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 loaded_bridge=$(ldd "$observer" | awk '$1 == "libseekdb_cuvs_bridge.so" && $2 == "=>" { print $3 }')
 if [[ "$loaded_bridge" != "$bridge" ]]; then
@@ -137,6 +164,7 @@ mysql_cmd=("$mysql_bin" --protocol=TCP -h 127.0.0.1 -P "$port" -uroot --connect-
   cd "$run"
   exec "$observer" --nodaemon --port "$port" --base-dir "$run" --data-dir "$run/store" \
     --log-level INFO --parameter local_ip=127.0.0.1 --parameter cpu_count="$jobs" \
+    --parameter max_syslog_file_count=8 \
     --parameter __min_full_resource_pool_memory=2147483648 \
     --parameter memory_budget=4G --parameter datafile_size=20G
 ) >"$work/observer.out" 2>&1 &
@@ -154,7 +182,21 @@ for _ in $(seq 1 120); do
   sleep 1
 done
 if [[ "$ready" != true ]]; then
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "seekdb is running but did not answer SQL on port $port before the startup deadline." >&2
+  else
+    observer_status=0
+    wait "$pid" || observer_status=$?
+    echo "seekdb exited with status $observer_status before SQL was ready." >&2
+  fi
+  "${mysql_cmd[@]}" -e 'select 1' >&2 || true
   tail -40 "$work/observer.out" >&2
+  if [[ -f "$run/log/seekdb.log" ]]; then
+    echo "Recent seekdb errors from $run/log/seekdb.log:" >&2
+    grep -aiE ' ERROR |FATAL|No space left|ENOSPC' "$run/log/seekdb.log" | tail -20 >&2 || true
+    tail -15 "$run/log/seekdb.log" >&2
+  fi
+  df -h "$run" >&2
   exit 1
 fi
 
