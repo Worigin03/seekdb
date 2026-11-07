@@ -52,7 +52,12 @@ private:
 };
 
 // A tokenizer or a backfill worker owns each map exclusively.
-using ObFTWordMap = common::hash::ObHashMap<ObFTWord, int64_t, common::hash::NoPthreadDefendMode>;
+using ObFTWordMapNode = common::hash::HashMapTypes<ObFTWord, int64_t>::AllocType;
+using ObFTWordMapAllocator = common::hash::SimpleAllocer<
+    ObFTWordMapNode, common::hash::NodeNumTraits<ObFTWordMapNode>::NODE_NUM, common::hash::NoPthreadDefendMode>;
+using ObFTWordMap = common::hash::ObHashMap<
+    ObFTWord, int64_t, common::hash::NoPthreadDefendMode, common::hash::hash_func<ObFTWord>,
+    common::hash::equal_to<ObFTWord>, ObFTWordMapAllocator>;
 
 class ObAddWordFlag final
 {
