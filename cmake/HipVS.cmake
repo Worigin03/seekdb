@@ -56,6 +56,11 @@ if(OB_BUILD_CUVS)
         "${hipvs_bridge_source}/build.sh"
         "${hipvs_bridge_source}/seekdb_cuvs_bridge.c"
         "${hipvs_bridge_source}/seekdb_cuvs_bridge.h"
+        "${hipvs_bridge_source}/experiments/build_fast.sh"
+        "${hipvs_bridge_source}/experiments/cagra_detours.hip"
+        "${hipvs_bridge_source}/experiments/cagra_fast_build.cpp"
+        "${hipvs_bridge_source}/experiments/cagra_finish.h"
+        "${hipvs_bridge_source}/experiments/cagra_prune_probe.cpp"
         "${hipvs_root}/lib/libcuvs_c.so"
       COMMENT "Building the seekdb hipVS bridge"
       VERBATIM)

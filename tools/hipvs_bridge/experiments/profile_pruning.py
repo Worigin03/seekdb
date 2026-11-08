@@ -226,7 +226,7 @@ def run(work, rows, hipvs_root, rocm_root):
     save()
     print(f"诊断目录 {work}", flush=True)
     report["stock_compile"] = execute("stock_compile", ["bash", str(root.parent / "build.sh"),
-                                                       str(work / "libseekdb_cuvs_bridge.so")])
+                                                       str(work / "libseekdb_cuvs_bridge.so"), "--stock"])
     report["prune_compile"] = execute("prune_compile", [
         str(hipcc), "-shared", "-fPIC", "-O3", "-std=c++17", "-D__HIP_PLATFORM_AMD__",
         f"-I{hipvs_root / 'include'}", f"-I{rocm_root / 'include'}",

@@ -18,6 +18,11 @@ OUTPUT=${1:-$SCRIPT_DIR/libseekdb_cuvs_bridge.so}
   exit 2
 }
 
+if [[ "${2:-}" != --stock && -f "$HIPVS_ROOT/include/cuvs/neighbors/nn_descent.h" ]] &&
+   grep -Fq cuvsCagraIndexFromArgs "$HIPVS_ROOT/include/cuvs/neighbors/cagra.h"; then
+  exec bash "$SCRIPT_DIR/experiments/build_fast.sh" "$OUTPUT"
+fi
+
 mkdir -p "$(dirname "$OUTPUT")"
 
 "$HIPCC" \
