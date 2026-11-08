@@ -8,8 +8,8 @@ rocm=${ROCM_ROOT:-/opt/rocm}
 hipcc=${HIPCC:-$rocm/bin/hipcc}
 
 [[ -x "$hipcc" ]] || { echo "Missing hipcc: $hipcc" >&2; exit 2; }
-[[ -f "$hipvs/include/cuvs/neighbors/cagra.hpp" ]] || {
-  echo "Missing hipVS C++ CAGRA headers: $hipvs/include" >&2
+[[ -f "$hipvs/include/cuvs/neighbors/cagra.h" ]] || {
+  echo "Missing hipVS CAGRA header: $hipvs/include" >&2
   exit 2
 }
 mkdir -p "$(dirname "$output")"
@@ -22,4 +22,4 @@ includes=(-I"$hipvs/include" -I"$rocm/include" -D__HIP_PLATFORM_AMD__)
   "$bridge_object" "$here/cagra_detours.hip" "$here/cagra_prune_probe.cpp" \
   "$here/cagra_fast_build.cpp" -L"$hipvs/lib" \
   -Wl,-z,defs -Wl,-soname,libseekdb_cuvs_bridge.so -Wl,-rpath,"$hipvs/lib:$rocm/lib" \
-  -lcuvs_c -lcuvs -o "$output"
+  -lcuvs_c -o "$output"

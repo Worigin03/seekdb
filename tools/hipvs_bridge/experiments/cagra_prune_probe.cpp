@@ -37,7 +37,7 @@ struct DeviceBuffer {
   {
     require(hipMalloc(reinterpret_cast<void **>(&data), elements * sizeof(T)), "hipMalloc");
   }
-  ~DeviceBuffer() { hipFree(data); }
+  ~DeviceBuffer() { (void)hipFree(data); }
   DeviceBuffer(const DeviceBuffer &) = delete;
   DeviceBuffer &operator=(const DeviceBuffer &) = delete;
 };
@@ -45,7 +45,7 @@ struct DeviceBuffer {
 struct Event {
   hipEvent_t event = nullptr;
   Event() { require(hipEventCreate(&event), "hipEventCreate"); }
-  ~Event() { hipEventDestroy(event); }
+  ~Event() { (void)hipEventDestroy(event); }
   Event(const Event &) = delete;
   Event &operator=(const Event &) = delete;
 };

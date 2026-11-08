@@ -1,12 +1,10 @@
 // Optional builder for the Radeon experiment. Search and snapshots use cuVS.
 #include <cuvs/neighbors/cagra.h>
-#include <cuvs/neighbors/cagra.hpp>
 #include "cagra_finish.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdio>
-#include <memory>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -47,13 +45,16 @@ void for_rows(unsigned rows, Function function)
 }
 }  // namespace
 
-extern "C" int seekdb_fast_cagra_build(cuvsResources_t resource, const float *base,
-                                      unsigned rows, unsigned dimension, unsigned iterations,
+extern "C" int seekdb_fast_cagra_build(cuvsResources_t resource, DLManagedTensor *dataset,
+                                      unsigned iterations,
                                       cuvsCagraIndex_t handle)
 {
   // Also let the C API destroy the empty handle if construction throws.
-  handle->dtype = {kDLFloat, 32, 1};
+  handle->dtype = dataset->dl_tensor.dtype;
   try {
+    const auto rows = static_cast<unsigned>(dataset->dl_tensor.shape[0]);
+    const auto dimension = static_cast<unsigned>(dataset->dl_tensor.shape[1]);
+    const auto *base = static_cast<const float *>(dataset->dl_tensor.data);
     double nnd_seconds = 0;
     double count_seconds = 0;
     double select_seconds = 0;
@@ -104,14 +105,18 @@ extern "C" int seekdb_fast_cagra_build(cuvsResources_t resource, const float *ba
     reverse_seconds = since(start_reverse);
 
     const auto start_attach = Clock::now();
-    // The pinned C API stores a raft::resources pointer in cuvsResources_t.
-    auto &res = *reinterpret_cast<raft::resources *>(resource);
-    auto vectors = raft::make_host_matrix_view<const float, int64_t>(base, rows, dimension);
-    auto graph = raft::make_host_matrix_view<const uint32_t, int64_t>(
-        forward.data(), rows, OUTPUT_DEGREE);
-    auto index = std::make_unique<cuvs::neighbors::cagra::index<float, uint32_t>>(
-        res, cuvs::distance::DistanceType::L2Expanded, vectors, graph);
-    handle->addr = reinterpret_cast<uintptr_t>(index.release());
+    int64_t shape[]{rows, OUTPUT_DEGREE};
+    DLManagedTensor graph{};
+    graph.dl_tensor.data = forward.data();
+    graph.dl_tensor.device = {kDLCPU, 0};
+    graph.dl_tensor.ndim = 2;
+    graph.dl_tensor.dtype = {kDLUInt, 32, 1};
+    graph.dl_tensor.shape = shape;
+    // The pinned constructor copies both host tensors to index-owned storage.
+    if (cuvsCagraIndexFromArgs(resource, L2Expanded, &graph, dataset, handle) != CUVS_SUCCESS) {
+      const char *detail = cuvsGetLastErrorText();
+      throw std::runtime_error(detail ? detail : "could not attach the CAGRA graph");
+    }
     std::fprintf(stderr, "[fast CAGRA] nnd_s=%.6f count_s=%.6f select_s=%.6f reverse_s=%.6f "
                          "attach_s=%.6f\n",
                  nnd_seconds, count_seconds, select_seconds, reverse_seconds, since(start_attach));
