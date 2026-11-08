@@ -73,7 +73,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   if (!h) return NULL;
   if (cuvsResourcesCreate(&h->res) != CUVS_SUCCESS) { free(h); return NULL; }
 
-  DLManagedTensor dset; long ds[2] = {n, dim};
+  DLManagedTensor dset; int64_t ds[2] = {n, dim};
   dset.dl_tensor.data = (void*)base;
   dset.dl_tensor.device.device_type = kDLCPU; dset.dl_tensor.device.device_id = 0;
   dset.dl_tensor.ndim = 2;
@@ -114,7 +114,7 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
   if (rc) goto done;
   if (cudaMemcpy(h->qd, query, sizeof(float)*nq*h->dim, cudaMemcpyDefault) != cudaSuccess) { rc=13; goto done; }
   {
-    DLManagedTensor qt, nt, dt; long qs[2]={nq,h->dim}, nsh[2]={nq,topk}, dsh[2]={nq,topk};
+    DLManagedTensor qt, nt, dt; int64_t qs[2]={nq,h->dim}, nsh[2]={nq,topk}, dsh[2]={nq,topk};
     qt.dl_tensor.data=h->qd; qt.dl_tensor.device.device_type=kDLCUDA; qt.dl_tensor.device.device_id=0;
     qt.dl_tensor.ndim=2; qt.dl_tensor.dtype.code=kDLFloat; qt.dl_tensor.dtype.bits=32; qt.dl_tensor.dtype.lanes=1;
     qt.dl_tensor.shape=qs; qt.dl_tensor.strides=0; qt.dl_tensor.byte_offset=0;
@@ -131,6 +131,11 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
       const bool use_multi_cta = nq == 1 && h->sp->itopk_size == 512;
       h->sp->algo = use_multi_cta ? MULTI_CTA : SINGLE_CTA;
       h->sp->max_iterations = use_multi_cta ? 48 : 0;
+#ifdef SEEKDB_IVF_FLAT_BUILD
+      if (use_multi_cta) {
+        h->sp->search_width = 64;
+      }
+#endif
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, h->sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }

@@ -1,7 +1,8 @@
-// Optional builder for the Radeon experiment. Search and snapshots use cuVS.
+// Assemble a CAGRA graph for the AMD bridge. Search and snapshots use cuVS.
 #include <cuvs/neighbors/cagra.h>
 #include "cagra_finish.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -10,9 +11,13 @@
 #include <vector>
 
 extern "C" int seekdb_probe_nn_descent(const float *, unsigned, unsigned, unsigned, unsigned,
-                                       uint32_t *, double *);
+                                      uint32_t *, double *);
 extern "C" int seekdb_fast_detour_counts(const uint32_t *, unsigned, unsigned, uint8_t *);
 extern "C" int seekdb_fast_reverse(const uint32_t *, unsigned, unsigned, uint32_t *, uint32_t *);
+#ifdef SEEKDB_IVF_FLAT_BUILD
+extern "C" int seekdb_ivf_flat_graph(const float *, unsigned, unsigned, unsigned,
+                                     uint32_t *, double *);
+#endif
 
 namespace {
 using namespace cagra_experiment;
@@ -55,17 +60,30 @@ extern "C" int seekdb_fast_cagra_build(cuvsResources_t resource, DLManagedTensor
     const auto rows = static_cast<unsigned>(dataset->dl_tensor.shape[0]);
     const auto dimension = static_cast<unsigned>(dataset->dl_tensor.shape[1]);
     const auto *base = static_cast<const float *>(dataset->dl_tensor.data);
-    double nnd_seconds = 0;
+    double candidate_seconds = 0;
     double count_seconds = 0;
     double select_seconds = 0;
     double reverse_seconds = 0;
+    bool ivf_built = false;
     std::vector<uint32_t> forward(static_cast<size_t>(rows) * OUTPUT_DEGREE);
     {
       const size_t edges = static_cast<size_t>(rows) * INPUT_DEGREE;
       std::vector<uint32_t> neighbors(edges);
-      if (seekdb_probe_nn_descent(base, rows, dimension, INPUT_DEGREE, iterations,
-                                  neighbors.data(), &nnd_seconds)) {
-        throw std::runtime_error("NN-Descent build failed");
+#ifdef SEEKDB_IVF_FLAT_BUILD
+      // The 512 IVF lists need enough training points. Keep the FP32 input
+      // intact and use NN-Descent when FP16 conversion would overflow.
+      if (rows >= 8192 &&
+          std::all_of(base, base + static_cast<size_t>(rows) * dimension, [](float value) {
+            return value >= -65504.0f && value <= 65504.0f;
+          })) {
+        ivf_built = seekdb_ivf_flat_graph(base, rows, dimension, INPUT_DEGREE, neighbors.data(),
+                                         &candidate_seconds) == 0;
+      }
+#endif
+      if (!ivf_built &&
+          seekdb_probe_nn_descent(base, rows, dimension, INPUT_DEGREE, iterations, neighbors.data(),
+                                 &candidate_seconds) != 0) {
+        throw std::runtime_error("intermediate graph build failed");
       }
 
       const auto start_count = Clock::now();
@@ -78,8 +96,7 @@ extern "C" int seekdb_fast_cagra_build(cuvsResources_t resource, DLManagedTensor
       const auto start_select = Clock::now();
       std::atomic<bool> valid{true};
       for_rows(rows, [&](size_t row) {
-        if (!select_edges(neighbors.data() + row * INPUT_DEGREE,
-                          counts.data() + row * INPUT_DEGREE,
+        if (!select_edges(neighbors.data() + row * INPUT_DEGREE, counts.data() + row * INPUT_DEGREE,
                           forward.data() + row * OUTPUT_DEGREE, rows)) {
           valid.store(false, std::memory_order_relaxed);
         }
@@ -117,9 +134,10 @@ extern "C" int seekdb_fast_cagra_build(cuvsResources_t resource, DLManagedTensor
       const char *detail = cuvsGetLastErrorText();
       throw std::runtime_error(detail ? detail : "could not attach the CAGRA graph");
     }
-    std::fprintf(stderr, "[fast CAGRA] nnd_s=%.6f count_s=%.6f select_s=%.6f reverse_s=%.6f "
+    std::fprintf(stderr, "[fast CAGRA] builder=%s candidates_s=%.6f count_s=%.6f select_s=%.6f reverse_s=%.6f "
                          "attach_s=%.6f\n",
-                 nnd_seconds, count_seconds, select_seconds, reverse_seconds, since(start_attach));
+                 ivf_built ? "ivf_flat_fp16" : "nn_descent", candidate_seconds, count_seconds,
+                 select_seconds, reverse_seconds, since(start_attach));
     return 0;
   } catch (const std::exception &error) {
     std::fprintf(stderr, "[fast CAGRA] %s\n", error.what());

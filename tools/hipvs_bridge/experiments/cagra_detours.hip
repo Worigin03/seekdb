@@ -1,5 +1,8 @@
 // Standalone experiment for CAGRA's rank-based two-hop edge counts.
 #include <hip/hip_runtime.h>
+#ifdef SEEKDB_IVF_FLAT_BUILD
+#include <hip/hip_fp16.h>
+#endif
 #include <cstdint>
 
 namespace {
@@ -133,3 +136,24 @@ hipError_t launch_reverse(const uint32_t *forward, uint32_t *reverse, uint32_t *
   }
   return hipSuccess;
 }
+
+#ifdef SEEKDB_IVF_FLAT_BUILD
+namespace {
+__global__ void convert_ivf_vectors(const float *source, __half *destination, size_t count)
+{
+  const size_t offset = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (offset < count) {
+    destination[offset] = __float2half(source[offset]);
+  }
+}
+}  // namespace
+
+hipError_t launch_ivf_half(const float *source, void *destination, size_t count)
+{
+  constexpr unsigned THREADS = 256;
+  const auto blocks = static_cast<unsigned>((count + THREADS - 1) / THREADS);
+  hipLaunchKernelGGL(convert_ivf_vectors, dim3(blocks), dim3(THREADS), 0, nullptr,
+                     source, static_cast<__half *>(destination), count);
+  return hipGetLastError();
+}
+#endif

@@ -16,6 +16,9 @@ mkdir -p "$(dirname "$output")"
 bridge_object=$(mktemp "$(dirname "$output")/seekdb-bridge.XXXXXXXX.o")
 trap 'rm -f -- "$bridge_object"' EXIT
 includes=(-I"$hipvs/include" -I"$rocm/include" -D__HIP_PLATFORM_AMD__)
+if [[ -f "$hipvs/include/cuvs/neighbors/ivf_flat.h" ]]; then
+  includes+=(-DSEEKDB_IVF_FLAT_BUILD)
+fi
 "$hipcc" -fPIC -O2 "${includes[@]}" -DSEEKDB_EXPERIMENTAL_GPU_PRUNE \
   -c "$here/../seekdb_cuvs_bridge.c" -o "$bridge_object"
 "$hipcc" -shared -fPIC -O3 -std=c++17 -pthread "${includes[@]}" \
