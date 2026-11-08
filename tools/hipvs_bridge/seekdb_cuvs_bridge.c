@@ -115,6 +115,11 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
       if (required_itopk < 512) required_itopk = 512;
       if (h->sp->itopk_size < required_itopk) h->sp->itopk_size = required_itopk;
       h->sp->search_width = 4;
+      // Use multiple blocks for a single query with the standard candidate budget.
+      // Reset both settings because the same index can also serve batch searches.
+      const bool use_multi_cta = nq == 1 && h->sp->itopk_size == 512;
+      h->sp->algo = use_multi_cta ? MULTI_CTA : SINGLE_CTA;
+      h->sp->max_iterations = use_multi_cta ? 48 : 0;
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, h->sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
