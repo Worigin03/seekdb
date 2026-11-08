@@ -10,6 +10,10 @@
 #endif
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef SEEKDB_EXPERIMENTAL_GPU_PRUNE
+extern int seekdb_fast_cagra_build(cuvsResources_t, const float *, unsigned, unsigned,
+                                  unsigned, cuvsCagraIndex_t);
+#endif
 
 typedef struct {
   cuvsResources_t        res;
@@ -83,6 +87,13 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   // Keep V5's graph connectivity while reducing the NN-Descent iteration cap.
   h->ip->nn_descent_niter = 48;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
+#ifdef SEEKDB_EXPERIMENTAL_GPU_PRUNE
+  if (n > 384 && (unsigned long)n <= UINT32_MAX &&
+      dim > 0 && (unsigned long)dim <= UINT32_MAX) {
+    if (seekdb_fast_cagra_build(h->res, base, (unsigned)n, (unsigned)dim,
+                              (unsigned)h->ip->nn_descent_niter, h->idx) != 0) goto fail_idx;
+  } else
+#endif
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   h->n = n; h->dim = dim;
   return h;

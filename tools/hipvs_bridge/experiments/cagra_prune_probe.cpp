@@ -10,6 +10,7 @@
 #include <vector>
 
 hipError_t launch_detours(const uint32_t *, uint8_t *, unsigned, unsigned, unsigned, bool);
+hipError_t launch_reverse(const uint32_t *, uint32_t *, uint32_t *, unsigned, unsigned);
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -151,6 +152,49 @@ extern "C" int seekdb_probe_detours(const uint32_t *graph, unsigned rows, unsign
     return 0;
   } catch (const std::exception &error) {
     std::fprintf(stderr, "[prune probe] %s\n", error.what());
+    return 1;
+  }
+}
+
+extern "C" int seekdb_fast_detour_counts(const uint32_t *graph, unsigned rows, unsigned degree,
+                                        uint8_t *counts)
+{
+  try {
+    const size_t elements = static_cast<size_t>(rows) * degree;
+    DeviceBuffer<uint32_t> input(elements);
+    DeviceBuffer<uint8_t> output(elements);
+    require(hipMemcpy(input.data, graph, elements * sizeof(uint32_t), hipMemcpyHostToDevice),
+            "copy input graph");
+    require(launch_detours(input.data, output.data, rows, degree, 128, true), "count detours");
+    require(hipMemcpy(counts, output.data, elements, hipMemcpyDeviceToHost), "read detour counts");
+    return 0;
+  } catch (const std::exception &error) {
+    std::fprintf(stderr, "[fast CAGRA] %s\n", error.what());
+    return 1;
+  }
+}
+
+extern "C" int seekdb_fast_reverse(const uint32_t *forward, unsigned rows, unsigned degree,
+                                  uint32_t *reverse, uint32_t *counts)
+{
+  try {
+    const size_t elements = static_cast<size_t>(rows) * degree;
+    DeviceBuffer<uint32_t> input(elements);
+    DeviceBuffer<uint32_t> output(elements);
+    DeviceBuffer<uint32_t> sizes(rows);
+    require(hipMemcpy(input.data, forward, elements * sizeof(uint32_t), hipMemcpyHostToDevice),
+            "copy pruned graph");
+    require(hipMemset(output.data, 0xff, elements * sizeof(uint32_t)), "initialize reverse rows");
+    require(hipMemset(sizes.data, 0, rows * sizeof(uint32_t)), "zero reverse degrees");
+    // Only the first min(count, degree) entries of each reverse row are read.
+    require(launch_reverse(input.data, output.data, sizes.data, rows, degree), "build reverse graph");
+    require(hipMemcpy(reverse, output.data, elements * sizeof(uint32_t), hipMemcpyDeviceToHost),
+            "read reverse graph");
+    require(hipMemcpy(counts, sizes.data, rows * sizeof(uint32_t), hipMemcpyDeviceToHost),
+            "read reverse degrees");
+    return 0;
+  } catch (const std::exception &error) {
+    std::fprintf(stderr, "[fast CAGRA] %s\n", error.what());
     return 1;
   }
 }

@@ -88,6 +88,22 @@ __global__ void count_detours(const uint32_t *graph, uint8_t *output, unsigned r
     output[row * degree + rank] = static_cast<uint8_t>(counts[rank] > 255 ? 255 : counts[rank]);
   }
 }
+
+__global__ void reverse_rank(const uint32_t *forward, uint32_t *reverse, uint32_t *counts,
+                             unsigned rows, unsigned degree, unsigned rank)
+{
+  const size_t source = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (source < rows) {
+    const uint32_t destination = forward[source * degree + rank];
+    if (destination < rows) {
+      const unsigned position = atomicAdd(counts + destination, 1u);
+      if (position < degree) {
+        reverse[static_cast<size_t>(destination) * degree + position] =
+            static_cast<uint32_t>(source);
+      }
+    }
+  }
+}
 }  // namespace
 
 hipError_t launch_detours(const uint32_t *graph, uint8_t *output, unsigned rows,
@@ -99,4 +115,21 @@ hipError_t launch_detours(const uint32_t *graph, uint8_t *output, unsigned rows,
   hipLaunchKernelGGL(count_detours, dim3(rows), dim3(threads), 0, nullptr,
                      graph, output, rows, degree, use_hash);
   return hipGetLastError();
+}
+
+hipError_t launch_reverse(const uint32_t *forward, uint32_t *reverse, uint32_t *counts,
+                          unsigned rows, unsigned degree)
+{
+  if (rows == 0 || degree == 0 || degree > MAX_DEGREE) return hipErrorInvalidValue;
+  constexpr unsigned THREADS = 256;
+  const unsigned blocks = 1 + (rows - 1) / THREADS;
+  // Launch ranks in order so a lower forward rank keeps priority when the
+  // destination row has more incoming edges than fit in the reverse graph.
+  for (unsigned rank = 0; rank < degree; ++rank) {
+    hipLaunchKernelGGL(reverse_rank, dim3(blocks), dim3(THREADS), 0, nullptr,
+                       forward, reverse, counts, rows, degree, rank);
+    const auto status = hipGetLastError();
+    if (status != hipSuccess) return status;
+  }
+  return hipSuccess;
 }
