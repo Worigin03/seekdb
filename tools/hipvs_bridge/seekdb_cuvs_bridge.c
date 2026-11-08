@@ -81,7 +81,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->graph_degree = 128;
   h->ip->intermediate_graph_degree = 256;
   // Keep V5's graph connectivity while reducing the NN-Descent iteration cap.
-  h->ip->nn_descent_niter = 80;
+  h->ip->nn_descent_niter = 48;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   h->n = n; h->dim = dim;
