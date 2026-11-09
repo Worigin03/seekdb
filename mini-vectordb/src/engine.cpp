@@ -475,6 +475,19 @@ void Database::truncateWal(uint64_t off) {
 void Database::recover() {
   ensureMapped();
   uint64_t size = wal_.size();
+  if (size < 8) {
+    // A crash between creating the file and writing its header (or a zeroed
+    // file) must not brick the database: an empty log is simply an empty one.
+    std::string hdr = kWALMagic;
+    hdr.append(8 - hdr.size(), '\0');
+    if (!wal_.writeAt(0, hdr.data(), hdr.size()))
+      throwErr(1105, "HY000", "cannot initialise " + walPath_);
+    wal_.sync();
+    map_.unmap();
+    mappedLen_ = 0;
+    ensureMapped();
+    size = wal_.size();
+  }
   if (size < 8 || memcmp(map_.data(), kWALMagic, 7) != 0)
     throwErr(1105, "HY000", "bad WAL header");
   uint64_t pos = 8;

@@ -58,8 +58,12 @@ OK <n>
 * 状态行 `OK <n>`：`n` 是受影响记录数（INSERT/UPDATE/DELETE），查询时是返回的行数，
   其余语句为 0。题包的 `affected_rows` 断言直接对应这个数字。
 * 语句边界：**以换行为界**（题包 `mysqltest/cases/*.test` 就是一行一条），行尾的 `;`
-  可有可无；同一行里用 `;` 分隔多条语句也可以；括号、引号或结尾停在 `VALUES` / `WHERE`
-  这类词上时视为未写完，会继续等下一行，所以跨行书写的语句也不会被执行半截。
+  可有可无；同一行里用 `;` 分隔多条语句也可以。
+  只有在“这一行明显没写完”时才继续等下一行：引号/括号未闭合，或结尾停在 `VALUES`、
+  `WHERE`、`AND`、`ORDER BY` 这类**不可能结束语句**的词上；而且一旦 stdin 在 40 ms 内
+  没有新字节（说明驱动已经在等结果），当前内容立即执行。**任何合法语句都不会被吞掉**——
+  早期版本把 `value`、`begin`、`bigint`、`key` 也当成“未写完”，导致 `ORDER BY value`、
+  `BEGIN`、`ALTER TABLE ... BIGINT` 这类完整语句被无限期挂起，这是v1准入失败的直接原因。
   支持 `--`、`#`、`/* */` 注释，支持字符串内的分号、`''` 与反斜杠转义、反引号标识符。
 * 就绪标记是自适应的：启动后最多等 `MVDB_READY_DELAY_MS`（默认 400 ms）看 stdin 是否
   已经有数据。驱动若在等 `READY`，这段时间内不会有输入，程序照常打印 `READY`；驱动若
@@ -69,7 +73,10 @@ OK <n>
   这种，不做定点截断，便于按浮点误差比较）。
 * 每条语句执行完立即 `fflush(stdout)`，不会让驱动等待缓冲区。
 * 正常退出：EOF、`exit`、`quit`、`bye`、`\q`；收到 SIGTERM 直接退出（已提交数据均已落盘，
-  未提交记录不会被恢复）。
+  未提交记录不会被恢复）。题包的 `--restart` 就是“正常关闭 + 同目录再启动”，三种关闭方式
+  都验证过回滚未提交事务。
+* 模式切换：题包 `--mode ann` 由驱动转成 SQL 下发（本实现接受 `SET vector_mode = 'ann'`
+  / `SET vector_mode = 'exact'`，也接受 `SET @@vector_mode`、`SET ann = 1`）。
 
 示例（`docker run -i` 或本地进程）：
 
@@ -288,10 +295,12 @@ VECTOR 为 dim×4 字节原始 float32。主键单独存在记录头里，便于
 | `tests/test_edge.py` | 主键极值、Unicode 长度与排序、向量校验、语句原子性、DESC TopK、索引维护、5000 行崩溃恢复 | 42 项断言全部通过 |
 | `tests/fuzz.py` | 随机 600 步增删改查与 Python 参考模型差分对比 | 169 项断言全部通过 |
 | `tests/test_spec.py` | 按题面 2.1–2.3 逐条对照（表结构、DML、比较、排序、向量、事务、恢复、输入校验、不支持语句必须报错） | 35 项全部通过 |
-| `tests/run_public_cases.py` | 直接跑官方题包 `mysqltest/cases/*.test` 并核对 `.result` 的 JSON 断言 | 5/5 用例通过 |
+| `tests/run_public_cases.py` | 直接跑官方题包 `mysqltest/cases/*.test` 并核对 `.result` 的 JSON 断言（含 `--restart`、`--mode ann` 驱动指令） | 20/20 用例通过 |
 | `tests/bench.py` | 10k×128 维写入 + 1000 次 TopK | 见下 |
 | `tests/bench_latency.py` | 同上，并从 stderr 解析服务端单语句耗时 | 见下 |
 | `tests/stress.py` | 150k×128 维（73 MiB 向量）在 256 MiB 容器内写入、查询、重启 | PASS |
+| `tests/test_formal.py` | 按 3.2 验收表补测：强杀后已提交数据保留 / 未提交回滚、恢复途中反复强杀、SIGTERM 正常关闭回滚、非法向量（NaN/Inf/维度/溢出）、VARCHAR 按字符计长、过滤 ANN 召回、语句边界、事务内可见性 | 42 项全部通过 |
+| 大内存用例 | 200k×256 维（205 MB 向量）在 256 MiB 容器内：写入 28 s、过滤 TopK 844 ms、重启 1.6 s、结果一致 | PASS |
 
 ### 7.1 Linux x86_64 容器（正式运行环境）
 

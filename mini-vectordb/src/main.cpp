@@ -17,6 +17,8 @@
 
 #ifndef _WIN32
 #include <poll.h>
+#else
+#include <windows.h>
 #endif
 
 #include "engine.h"
@@ -34,8 +36,15 @@ static bool g_debug = false;
 // that waits for a readiness marker from one that simply starts writing SQL.
 static bool stdinPending(int timeoutMs) {
 #ifdef _WIN32
+  // PeekNamedPipe tells us whether more bytes are queued; a console cannot be
+  // polled, so fall back to "unknown" (false) there.
   (void)timeoutMs;
-  return false;
+  HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+  if (h == INVALID_HANDLE_VALUE || h == nullptr) return false;
+  if (GetFileType(h) != FILE_TYPE_PIPE) return false;
+  DWORD avail = 0;
+  if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) return false;
+  return avail > 0;
 #else
   if (timeoutMs <= 0) return false;
   struct pollfd p;
@@ -96,10 +105,11 @@ static bool looksIncomplete(const std::string& s) {
     w.insert(w.begin(), c);
   }
   w = toLowerAscii(w);
-  static const char* kOpen[] = {"values", "value", "where", "and", "or", "not", "set", "into",
-                                "from", "order", "by", "limit", "select", "table", "begin",
-                                "commit", "rollback", "as", "on", "using", "join", "primary",
-                                "key", "vector", "varchar", "bigint"};
+  // Only tokens that cannot legally end a statement. Column names such as
+  // "value" or "key" are deliberately absent: treating them as openers would
+  // swallow a complete "ORDER BY value" and deadlock the driver.
+  static const char* kOpen[] = {"values", "where", "and", "or", "not", "set", "into",
+                                "from", "order", "by", "limit", "as", "on", "using", "join"};
   for (const char* k : kOpen)
     if (w == k) return true;
   return false;
@@ -231,12 +241,23 @@ int main(int argc, char** argv) {
       eof = true;
     } else {
       buf.append(raw);
-      if (buf.back() != '\n') continue;  // partial line, wait for the rest
+      if (buf.back() != '\n') {
+        // A statement longer than the read buffer, or one the driver sent
+        // without a trailing newline: keep waiting only while more bytes are
+        // actually queued, otherwise execute what we have.
+        if (stdinPending(40)) continue;
+      }
     }
     // The case format is "one statement per line", so a complete line is
     // executed even without a trailing semicolon; ';' still splits multiple
     // statements on one line.
-    if (!looksIncomplete(buf)) {
+    bool incomplete = looksIncomplete(buf);
+    if (incomplete && !eof) {
+      // Never let the heuristic deadlock a driver that is waiting for an
+      // answer: if no further bytes are queued, what we have is the statement.
+      if (!stdinPending(40)) incomplete = false;
+    }
+    if (!incomplete) {
       std::string stmt;
       while (extractStatement(buf, stmt)) {
         if (!runOne(stmt)) {
