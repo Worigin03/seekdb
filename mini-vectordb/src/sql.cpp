@@ -361,21 +361,21 @@ class Parser {
   ExprPtr parseVectorExpr() {
     auto e = std::make_shared<Expr>();
     e->kind = Expr::VEC_LIT;
-    size_t startPos = cur().pos;
     if (cur().kind == TK_STR) {
-      std::string txt = cur().text;
-      size_t endPos = cur().end;
-      next();
-      e->raw = sql_.substr(startPos, endPos - startPos);
+      // '[1,2,3]' arrives as one string token: parse it in place, no copies.
+      const std::string& txt = cur().text;
       size_t k = 0;
       while (k < txt.size() && isspace((unsigned char)txt[k])) k++;
       if (k < txt.size() && txt[k] == '[') {
-        e->kind = Expr::VEC_LIT;
-        e->vecText = txt;
+        std::string verr;
+        e->vec.reserve(txt.size() / 6 + 4);  // rough element count, avoids regrowth
+        e->vecOk = parseVectorLiteral(txt, 0, e->vec, verr);
+        if (!e->vecOk) e->vecText = txt;  // keep the text for the error message
       } else {
         e->kind = Expr::STR_LIT;
         e->s = txt;
       }
+      next();
       return e;
     }
     if (!isPunct("[")) syntax("expected vector literal");
@@ -401,8 +401,10 @@ class Parser {
     }
     expectPunct("]");
     text += "]";
-    e->vecText = text;
-    e->raw = text;
+    std::string verr;
+    e->vec.reserve(text.size() / 6 + 4);
+    e->vecOk = parseVectorLiteral(text, 0, e->vec, verr);
+    if (!e->vecOk) e->vecText = std::move(text);
     return e;
   }
 
@@ -449,7 +451,14 @@ class Parser {
       next();
       expectPunct(",");
       ExprPtr v = parseVectorExpr();
-      e->vecText = v->vecText;
+      if (v->kind == Expr::VEC_LIT && v->vecOk) {
+        e->vec = std::move(v->vec);
+        e->vecOk = true;
+      } else if (v->kind == Expr::VEC_LIT) {
+        e->vecText = v->vecText;
+      } else {
+        e->vecText = v->s;  // not bracket-shaped: keep the text for the error
+      }
       expectPunct(")");
       e->s = squared ? "sq" : "l2";
       e->raw = sql_.substr(pos, t_[i_ - 1].end - pos);
@@ -869,99 +878,188 @@ Stmt parseStatement(const std::string& sql) {
 
 // --------------------------------------------------------------- splitter ---
 
-bool extractStatement(std::string& buf, std::string& stmt) {
-  size_t i = 0;
-  bool inSingle = false, inDouble = false, inBacktick = false, inLineComment = false,
-       inBlockComment = false;
-  while (i < buf.size()) {
-    char c = buf[i];
-    if (inLineComment) {
-      if (c == '\n') inLineComment = false;
-      i++;
-      continue;
-    }
-    if (inBlockComment) {
-      if (c == '*' && i + 1 < buf.size() && buf[i + 1] == '/') {
-        inBlockComment = false;
-        i += 2;
+// Heuristic used by the line-oriented splitter: does the accumulated text
+// still need more input? True when a quote/bracket is open or the line ends on
+// something that cannot end a statement (VALUES, WHERE, a dangling comma ...).
+// Column names such as "value" or "key" are deliberately absent: treating them
+// as openers would swallow a complete "ORDER BY value" and deadlock the driver.
+static bool looksIncompleteLine(const std::string& s) {
+  int par = 0, brk = 0;
+  bool inS = false, inD = false, inB = false;
+  for (size_t i = 0; i < s.size(); i++) {
+    char c = s[i];
+    if (inS) {
+      if (c == '\\' && i + 1 < s.size()) {
+        i++;
         continue;
       }
-      i++;
+      if (c == '\'') inS = false;
       continue;
     }
-    if (inSingle) {
-      if (c == '\\' && i + 1 < buf.size()) {
-        i += 2;
+    if (inD) {
+      if (c == '\\' && i + 1 < s.size()) {
+        i++;
         continue;
       }
-      if (c == '\'') {
-        if (i + 1 < buf.size() && buf[i + 1] == '\'') {
-          i += 2;
-          continue;
-        }
-        inSingle = false;
-      }
-      i++;
+      if (c == '"') inD = false;
       continue;
     }
-    if (inDouble) {
-      if (c == '\\' && i + 1 < buf.size()) {
-        i += 2;
-        continue;
-      }
-      if (c == '"') {
-        if (i + 1 < buf.size() && buf[i + 1] == '"') {
-          i += 2;
-          continue;
-        }
-        inDouble = false;
-      }
-      i++;
-      continue;
-    }
-    if (inBacktick) {
-      if (c == '`') inBacktick = false;
-      i++;
+    if (inB) {
+      if (c == '`') inB = false;
       continue;
     }
     if (c == '\'') {
-      inSingle = true;
-      i++;
+      inS = true;
       continue;
     }
     if (c == '"') {
-      inDouble = true;
-      i++;
+      inD = true;
       continue;
     }
     if (c == '`') {
-      inBacktick = true;
-      i++;
+      inB = true;
       continue;
     }
-    if (c == '-' && i + 1 < buf.size() && buf[i + 1] == '-') {
-      inLineComment = true;
-      i += 2;
+    if (c == '-' && i + 1 < s.size() && s[i + 1] == '-') {
+      while (i < s.size() && s[i] != '\n') i++;
+      continue;
+    }
+    if (c == '(') par++;
+    else if (c == ')') par--;
+    else if (c == '[') brk++;
+    else if (c == ']') brk--;
+  }
+  if (inS || inD || inB || par > 0 || brk > 0) return true;
+  size_t b = s.size();
+  while (b > 0 && isspace((unsigned char)s[b - 1])) b--;
+  if (b == 0) return false;
+  char last = s[b - 1];
+  if (last == ',' || last == '=' || last == '(' || last == '+' || last == '-' || last == '*' ||
+      last == '/' || last == '<' || last == '>')
+    return true;
+  size_t a = b;
+  while (a > 0 && isalpha((unsigned char)s[a - 1])) a--;
+  if (a == b) return false;
+  std::string w = toLowerAscii(s.substr(a, b - a));
+  // Only tokens that cannot legally end a statement.
+  static const char* kOpen[] = {"values", "where", "and", "or", "not", "set", "into",
+                                "from", "order", "by", "limit", "as", "on", "using", "join"};
+  for (const char* k : kOpen)
+    if (w == k) return true;
+  return false;
+}
+
+bool Splitter::next(std::string& stmt) {
+  // 1) top-level ';' anywhere in the unscanned tail
+  for (size_t i = scan_; i < buf_.size(); i++) {
+    char c = buf_[i];
+    if (inLineComment_) {
+      if (c == '\n') inLineComment_ = false;
+      continue;
+    }
+    if (inBlockComment_) {
+      if (c == '*' && i + 1 < buf_.size() && buf_[i + 1] == '/') {
+        inBlockComment_ = false;
+        i++;
+      }
+      continue;
+    }
+    if (inSingle_) {
+      if (c == '\\' && i + 1 < buf_.size()) {
+        i++;
+        continue;
+      }
+      if (c == '\'') {
+        if (i + 1 < buf_.size() && buf_[i + 1] == '\'') {
+          i++;
+          continue;
+        }
+        inSingle_ = false;
+      }
+      continue;
+    }
+    if (inDouble_) {
+      if (c == '\\' && i + 1 < buf_.size()) {
+        i++;
+        continue;
+      }
+      if (c == '"') {
+        if (i + 1 < buf_.size() && buf_[i + 1] == '"') {
+          i++;
+          continue;
+        }
+        inDouble_ = false;
+      }
+      continue;
+    }
+    if (inBacktick_) {
+      if (c == '`') inBacktick_ = false;
+      continue;
+    }
+    if (c == '\'') {
+      inSingle_ = true;
+      continue;
+    }
+    if (c == '"') {
+      inDouble_ = true;
+      continue;
+    }
+    if (c == '`') {
+      inBacktick_ = true;
+      continue;
+    }
+    if (c == '-' && i + 1 < buf_.size() && buf_[i + 1] == '-') {
+      inLineComment_ = true;
+      i++;
       continue;
     }
     if (c == '#') {
-      inLineComment = true;
+      inLineComment_ = true;
+      continue;
+    }
+    if (c == '/' && i + 1 < buf_.size() && buf_[i + 1] == '*') {
+      inBlockComment_ = true;
       i++;
       continue;
     }
-    if (c == '/' && i + 1 < buf.size() && buf[i + 1] == '*') {
-      inBlockComment = true;
-      i += 2;
-      continue;
-    }
     if (c == ';') {
-      stmt = buf.substr(0, i);
-      buf.erase(0, i + 1);
+      stmt.assign(buf_, 0, i);
+      buf_.erase(0, i + 1);
+      resetScan();
       return true;
     }
-    i++;
+  }
+  scan_ = buf_.size();
+
+  // 2) a complete line ("one statement per line" case format)
+  size_t nl = buf_.find('\n');
+  if (nl != std::string::npos) {
+    std::string line(buf_, 0, nl);
+    if (!looksIncompleteLine(line)) {
+      stmt = std::move(line);
+      buf_.erase(0, nl + 1);
+      resetScan();
+      return true;
+    }
   }
   return false;
+}
+
+bool Splitter::takeRest(std::string& stmt) {
+  if (buf_.empty()) return false;
+  stmt = std::move(buf_);
+  buf_.clear();
+  resetScan();
+  return true;
+}
+
+bool extractStatement(std::string& buf, std::string& stmt) {
+  static thread_local Splitter sp;
+  sp.clear();
+  sp.append(buf.data(), buf.size());
+  bool got = sp.next(stmt);
+  buf = sp.buffer();
+  return got;
 }
 
 }  // namespace mvdb

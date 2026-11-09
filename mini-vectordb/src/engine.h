@@ -20,6 +20,8 @@ class VecStore {
  public:
   VecStore() = default;
   ~VecStore();
+  VecStore(const VecStore&) = delete;
+  VecStore& operator=(const VecStore&) = delete;
 
   void init(int dim, const std::string& path, size_t memBudgetBytes);
   void reset();
@@ -29,7 +31,7 @@ class VecStore {
   const float* ptr(uint64_t rowid) const;
   // Contiguous base pointer; valid while no insert/update grows the store.
   const float* base() const {
-    return disk_ ? (const float*)map_.data() : mem_.data();
+    return disk_ ? (const float*)map_.data() : mem_;
   }
   int dim() const { return dim_; }
   uint64_t capacityRows() const { return capRows_; }
@@ -37,13 +39,14 @@ class VecStore {
  private:
   void switchToDisk();
   void growDisk(uint64_t needRows);
+  bool growMem(uint64_t needRows);
 
   int dim_ = 0;
   uint64_t slot_ = 0;      // bytes per row
   uint64_t capRows_ = 0;
   size_t budget_ = 0;
   bool disk_ = false;
-  std::vector<float> mem_;
+  float* mem_ = nullptr;   // owned; grown with realloc (no zero-fill, may extend in place)
   File file_;
   MappedFile map_;
   uint64_t fileCap_ = 0;
@@ -179,6 +182,7 @@ class Database {
   void open(const std::string& dir);
   void close();
   void execute(const std::string& sql, ResultSet& rs);
+  void dumpInsertTiming();
 
   bool inTransaction() const { return inTxn_; }
   const std::string& vectorMode() const { return vectorMode_; }

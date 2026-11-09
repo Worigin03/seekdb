@@ -15,7 +15,8 @@ struct Expr {
   std::string name;               // column name (COLUMN) or alias
   int64_t i = 0;                  // INT_LIT
   std::string s;                  // STR_LIT text
-  std::vector<float> vec;         // VEC_LIT
+  std::vector<float> vec;         // VEC_LIT values, parsed once at parse time
+  bool vecOk = false;             // vec holds a valid literal
   std::string vecText;            // raw text of vector literal (errors / echo)
   std::string distCol;            // DIST: vector column name
   std::string alias;              // explicit alias
@@ -126,6 +127,36 @@ Stmt parseStatement(const std::string& sql);
 // Streaming splitter: accumulate raw stdin text, pop complete statements.
 // Returns true when `stmt` was filled.
 bool extractStatement(std::string& buf, std::string& stmt);
+
+// Incremental splitter. It remembers how far the current buffer has already
+// been scanned, so feeding a 1 MB INSERT in 64 KB pipe reads costs one pass
+// over the text instead of one pass per read.
+class Splitter {
+ public:
+  void append(const char* p, size_t n) { buf_.append(p, n); }
+  bool empty() const { return buf_.empty(); }
+  const std::string& buffer() const { return buf_; }
+  // Pops one statement: up to a top-level ';', or up to a newline when the
+  // line cannot be a partial statement. Returns false when more input is
+  // needed.
+  bool next(std::string& stmt);
+  // Emits whatever is buffered as a single statement (idle peer / EOF).
+  bool takeRest(std::string& stmt);
+  void clear() {
+    buf_.clear();
+    resetScan();
+  }
+
+ private:
+  void resetScan() {
+    scan_ = 0;
+    inSingle_ = inDouble_ = inBacktick_ = inLineComment_ = inBlockComment_ = false;
+  }
+  std::string buf_;
+  size_t scan_ = 0;
+  bool inSingle_ = false, inDouble_ = false, inBacktick_ = false;
+  bool inLineComment_ = false, inBlockComment_ = false;
+};
 
 std::string trimSpace(const std::string& s);
 

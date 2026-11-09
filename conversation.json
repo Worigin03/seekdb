@@ -195,6 +195,31 @@
       "time": "2026-11-09T15:27:06+08:00",
       "content": "请继续执行任务",
       "notes": "学生的第二条输入：会话因网络错误中断后要求继续，未附加新的技术约束。"
+    },
+    {
+      "id": "U03",
+      "source": "student",
+      "kind": "instruction",
+      "verbatim": true,
+      "time": "2026-11-09T21:05:54+08:00",
+      "content": "在能通过mysql用例的前提下，尽可能提高原始性能指标",
+      "notes": "学生的第三条输入，明确了优先级：准入（MySQL 正式用例）不可牺牲，其次才是性能指标最大化。这句话推翻了 A08“保留单线程”的取舍。"
+    },
+    {
+      "id": "A09",
+      "source": "agent",
+      "kind": "analysis",
+      "verbatim": false,
+      "content": "重开 A08 的取舍：并行精确扫描不改变结果集（归并按 (距离, 主键) 全序，可逐字节比对），只增加线程与合并代码，因此与“MySQL 用例优先”不冲突；近似索引仍然不做。先量后改：用 minivectordb_base（上次提交）与当前工作树跑同一份数据集，分别记录导入与 TopK；每次改动后跑 217 条断言 + 串行/并行输出 diff。",
+      "notes": "把“并行”与“近似”分开评估：前者不牺牲正确性，后者会牺牲 Recall。"
+    },
+    {
+      "id": "T12",
+      "source": "tool",
+      "kind": "measurement",
+      "verbatim": true,
+      "content": "容器（Ryzen 5 7640HS / 12 vCPU，Ubuntu 24.04 + g++ 13，-O3 -funroll-loops）同一数据集对比：\n10k×128  导入 0.415s -> 0.210s    TopK 0.204ms -> 0.183ms\n50k×128  TopK 0.631ms -> 0.374ms\n100k×128 导入 3.744s -> 1.790s    TopK 1.342ms -> 0.760ms\n200k×256 TopK p50 2.558ms -> 1.197ms\n150k×128 256MiB 容器：写入 1.73s (86895 rows/s)、峰值 196MiB、重启 0.92s",
+      "notes": "并行收益随工作集增大而变大（10k 时线程唤醒与扫描同量级，保持单线程）；200k×256 落在 mmap 路径，仍有 2.1x。"
     }
   ],
   "experiments": [
@@ -242,6 +267,24 @@
       "interpretation": "WAL 按 COMMIT 记录分组重放、截断残缺尾部，所以未提交事务不会部分生效；ROLLBACK 之后的删除也保持不可见。",
       "conclusion": "恢复模型成立；恢复过程幂等，可在恢复途中再次 kill 后重来。",
       "status": "已完成"
+    },
+    {
+      "id": "E6",
+      "question": "精确 TopK 能不能用多核，且与单线程结果完全一致？",
+      "method": "把行区间按线程数切块，每块用同一个 AVX2 内核维护自己的 K，最后 K 路归并；归并比较器与单线程完全相同（距离，再按主键升序）。用 60 条混合查询（DESC、LIMIT/OFFSET、id 过滤、g 等值过滤）与 1000 条随机查询做串行 vs 并行 stdout 逐字节 diff。",
+      "output": "q_unf: 123553 bytes identical=True\nq_fil: 130538 bytes identical=True\nq_mixed(DESC/OFFSET/组合过滤): 6219 bytes identical=True\n50k×128 0.631ms -> 0.374ms；100k×128 1.342ms -> 0.760ms；200k×256 p50 2.558ms -> 1.197ms",
+      "interpretation": "结果与线程数、切块方式无关，只与 (距离, 主键) 全序有关，因此可以放心并行；加速比受内存带宽限制（4 线程后饱和），不是线程越多越好。",
+      "conclusion": "保留并行精确扫描：门槛设为 行数×维度 ≥ 1.5e6（低于此值唤醒成本高于收益），线程数 min(可用 CPU, 8)，可用 CPU 参考 cgroup 配额与 sched_getaffinity，避免在限额容器里过度订阅。",
+      "status": "已完成"
+    },
+    {
+      "id": "E7",
+      "question": "导入 10 万行的 3.7s 花在哪里？",
+      "method": "在输入循环、parseStatement、INSERT 各阶段（coerce/encode/wal/apply）插入 MVDB_LOOPSTAT / MVDB_INS_TIMING 计时，对 100 批 × 1000 行的 123MB SQL 逐段统计。",
+      "output": "优化前: poll 75ms read 62ms drain 2993ms(= exec 1330 + 切分 1663) print 1ms\n优化后: poll 473ms read 45ms drain 930ms(= exec 805 + 切分 125) print 1ms\nINSERT 阶段: coerce 227ms->23ms, apply 127ms->59ms, wal 78ms(CRC 改 slicing-by-8)",
+      "interpretation": "最大头不是解析也不是 WAL，而是切分器：它每次 read 都从缓冲区起点重扫，1MB 语句在 64KB 管道下要扫 19 遍（O(n²)）。其次是向量字面量被解析两次（语法分析一次文本拼装、执行期再一次），以及向量存储用 std::vector::resize 增长时的整块零填充。",
+      "conclusion": "改成增量 Splitter（记住扫描位置）、向量在解析阶段一次成型、向量存储改用 realloc 几何增长、CRC 改 slicing-by-8；导入从 3.74s 降到 1.79s。",
+      "status": "已完成"
     }
   ],
   "decisions": [
@@ -279,13 +322,21 @@
       "alternatives": "%.6f / 固定有效位",
       "why": "题面写“输出允许统一的浮点误差”，说明按数值比较；最短往返表示没有额外舍入误差，也最接近 Python repr 生成的参考值。",
       "cost": "整数值输出 1 而不是 1.0；若驱动做严格文本比对，两种格式都可能对不上。"
+    },
+    {
+      "id": "D6",
+      "decision": "精确 TopK 改为多线程分块 + K 路归并；线程数按可用 CPU（cgroup 配额/亲和性）取 min(CPU, 8)；小块保持单线程；不做 AVX-512 与近似索引。",
+      "alternatives": "继续单线程 / 引入 HNSW 近似索引 / AVX-512 内核",
+      "why": "并行不改变结果（E6 逐字节 diff），而 HNSW 会把 Recall 从 1.0 降到 0.9x，题面规定 Recall<0.95 性能项直接 0 分；AVX-512 在 Zen4 上是双泵 256 位，实测与 AVX2 持平（19.7 vs 19.9 Gfloat/s），不值得增加一条代码路径。",
+      "cost": "多线程带来 30~100µs 的分发延迟，所以 2 万行以下仍走单线程；线程池常驻会多占几个线程栈。"
     }
   ],
   "retrospective": {
     "what_worked": [
       "先写自建驱动再写引擎：每加一个能力就有一条可重复断言，最终 303 条断言在 Linux 容器里一次跑通。",
       "把“拿不到题包”当一等风险：标记文本、是否打印、等待时长都做成可配置，而不是赌一种写法。",
-      "用测量否掉自己的方案（E1 的 HNSW）：先量再选，比事后解释便宜。"
+      "用测量否掉自己的方案（E1 的 HNSW）：先量再选，比事后解释便宜。",
+      "把“改之前先量”用在性能上：E7 证明 44% 的导入时间花在切分器的 O(n²) 重扫，而不是直觉中的解析或 WAL。"
     ],
     "what_failed": [
       "第一条冒烟用例没带 L2_DISTANCE，payload 偏移错误才被拖到后面才发现。",
@@ -300,7 +351,7 @@
     ],
     "limits": [
       "没有官方题包与驱动，协议只能按题面反推，这是本次提交最大的不确定性。",
-      "单线程扫描，未利用多核；2 核以上机器上查询理论还有 1.5-2x 余量。",
+      "精确扫描是带宽受限的，并行只能把一台机器的内存带宽用满（本机 4 线程后饱和）；再快需要索引，而索引会牺牲 Recall。",
       "UPDATE 的 SET 只支持字面量，不支持 col = col + 1 这类表达式（题目未要求）。"
     ]
   },
@@ -329,13 +380,15 @@
     },
     {
       "dimension": "取舍与反思",
-      "student_evidence": [],
-      "comment": "学生唯一的后续输入是“请继续执行任务”（/records/20/content），不含任何取舍或反思；D1-D5 的取舍由 Agent 记录，不能算作学生的学习证据。"
+      "student_evidence": [
+        "/records/21/content"
+      ],
+      "comment": "学生在 U02 之后追加了明确的优先级约束：先保证 MySQL 正式用例通过，再最大化性能。这说明他理解“准入失败则性能无效”的计分规则，并据此否决了会牺牲正确性的近似索引路线；但仅此一句，没有给出具体的性能目标或取舍方案。"
     }
   ],
   "limitations": [
     "未获得官方测试驱动与题包，结果集格式、就绪标识与模式切换方式均为按题面推断，存在协议不匹配风险。",
-    "性能只做到单线程精确扫描，未使用多核，也未启用近似索引。",
+    "性能用了多线程精确扫描（不改变结果），但没有近似索引；超过内存的数据集只验证了 mmap 路径，未做超大数据量压测。",
     "测试覆盖 303 条断言，但不等于官方用例；超过内存的数据集只验证了 mmap 路径，未做超大数据量压测。"
   ]
 }

@@ -2,6 +2,7 @@
 *.o
 minivectordb
 minivectordb.exe
+build/
 
 # Local benchmark scratch space
 tmpbench/

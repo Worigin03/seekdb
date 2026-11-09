@@ -7,6 +7,7 @@
 #include <queue>
 #include <cstdio>
 #include <set>
+#include <unordered_set>
 
 namespace mvdb {
 
@@ -267,36 +268,50 @@ static void coerceValue(const Column& c, const Expr& e, Value& out, int rowNo) {
       if (e.kind != Expr::INT_LIT)
         throwErr(1366, "HY000", "Incorrect integer value for column '" + c.name + "' at row " +
                                      std::to_string(rowNo));
-      out = Value::ofInt(e.i);
+      out.i = e.i;
       break;
     }
     case Type::VARCHAR: {
-      std::string s;
-      if (e.kind == Expr::STR_LIT) s = e.s;
-      else if (e.kind == Expr::INT_LIT) s = std::to_string(e.i);
-      else
+      if (e.kind == Expr::STR_LIT) {
+        out.s.assign(e.s);
+      } else if (e.kind == Expr::INT_LIT) {
+        out.s.assign(std::to_string(e.i));
+      } else {
         throwErr(1366, "HY000", "Incorrect string value for column '" + c.name + "' at row " +
                                      std::to_string(rowNo));
-      checkVarchar(c, s, rowNo);
-      out = Value::ofStr(std::move(s));
+      }
+      checkVarchar(c, out.s, rowNo);
       break;
     }
     case Type::VECTOR: {
       if (e.kind != Expr::VEC_LIT)
         throwErr(1366, "HY000", "Incorrect vector value for column '" + c.name + "' at row " +
                                      std::to_string(rowNo));
-      std::vector<float> v;
-      std::string err;
-      if (!parseVectorLiteral(e.vecText, c.len, v, err))
-        throwErr(1366, "HY000", "Incorrect vector value for column '" + c.name + "' at row " +
-                                     std::to_string(rowNo) + ": " + err);
-      out = Value::ofVec(std::move(v));
+      if (e.vecOk) {
+        // Already parsed when the statement was parsed: only the dimension is
+        // schema-dependent.
+        if ((int)e.vec.size() != c.len)
+          throwErr(1366, "HY000", "Incorrect vector value for column '" + c.name + "' at row " +
+                                       std::to_string(rowNo) + ": vector dimension mismatch");
+        out.v.assign(e.vec.begin(), e.vec.end());
+      } else {
+        // Parses into the caller's buffer, which is reused by the next row.
+        std::string err;
+        if (!parseVectorLiteral(e.vecText, c.len, out.v, err))
+          throwErr(1366, "HY000", "Incorrect vector value for column '" + c.name + "' at row " +
+                                       std::to_string(rowNo) + ": " + err);
+      }
       break;
     }
   }
+  out.type = c.type;
 }
 
+static int64_t g_tCoerce = 0, g_tEncode = 0, g_tWal = 0, g_tApply = 0;
+static bool g_insTiming = getenv("MVDB_INS_TIMING") != nullptr;
+
 void Database::execInsert(const Stmt& st, ResultSet& rs) {
+  int64_t tt0 = g_insTiming ? nowMicros() : 0;
   Table* t = getTableOrThrow(st.insert.table);
   const Schema& sc = t->schema;
   std::vector<int> colMap;
@@ -309,63 +324,72 @@ void Database::execInsert(const Stmt& st, ResultSet& rs) {
       colMap.push_back(ci);
     }
   }
-  std::vector<std::vector<Value>> rows;
-  rows.reserve(st.insert.rows.size());
-  std::set<int64_t> seen;
+  // Source column index per schema column (-1 when the column is not listed).
+  std::vector<int> srcOf(sc.cols.size(), -1);
+  for (size_t i = 0; i < colMap.size(); i++) srcOf[colMap[i]] = (int)i;
+
+  // Coerce and encode in one pass. The row buffer and the payload strings are
+  // reused across rows so a bulk INSERT does not allocate per value.
+  std::vector<std::string> payloads;
+  std::vector<int64_t> pks;
+  payloads.reserve(st.insert.rows.size());
+  pks.reserve(st.insert.rows.size());
+  std::vector<Value> row(sc.cols.size());
+  std::unordered_set<int64_t> seen;
+  seen.reserve(st.insert.rows.size() * 2 + 8);
   for (size_t r = 0; r < st.insert.rows.size(); r++) {
     const auto& src = st.insert.rows[r];
     if (src.size() != colMap.size())
       throwErr(1136, "21S01", "Column count doesn't match value count at row " +
                                    std::to_string(r + 1));
-    std::vector<Value> row(sc.cols.size());
-    for (size_t i = 0; i < sc.cols.size(); i++) row[i].type = sc.cols[i].type;
-    std::vector<char> filled(sc.cols.size(), 0);
-    for (size_t i = 0; i < src.size(); i++) {
-      coerceValue(sc.cols[colMap[i]], *src[i], row[colMap[i]], (int)r + 1);
-      filled[colMap[i]] = 1;
-    }
     for (size_t i = 0; i < sc.cols.size(); i++) {
-      if (filled[i] || (int)i == sc.pk) continue;
+      Value& v = row[i];
+      v.type = sc.cols[i].type;
+      int si = srcOf[i];
+      if (si >= 0) {
+        coerceValue(sc.cols[i], *src[si], v, (int)r + 1);
+        continue;
+      }
+      // Columns the statement does not mention: VARCHAR defaults to '', the
+      // primary key keeps its default (0), anything else is an error.
+      if ((int)i == sc.pk) {
+        v.i = 0;
+        continue;
+      }
       if (sc.cols[i].type != Type::VARCHAR)
         throwErr(1364, "HY000", "Field '" + sc.cols[i].name + "' doesn't have a default value");
-      row[i] = Value::ofStr("");
+      v.s.clear();
     }
     int64_t pk = row[sc.pk].i;
     uint64_t existing = 0;
     if (t->pk.get(pk, existing))
       throwErr(1062, "23000", "Duplicate entry '" + std::to_string(pk) + "' for key 'PRIMARY'");
-    if (seen.count(pk))
+    if (!seen.insert(pk).second)
       throwErr(1062, "23000", "Duplicate entry '" + std::to_string(pk) + "' for key 'PRIMARY'");
-    seen.insert(pk);
-    rows.push_back(std::move(row));
+    payloads.emplace_back();
+    encodeRow(sc, row, payloads.back());
+    pks.push_back(pk);
   }
+  int64_t tt1 = g_insTiming ? nowMicros() : 0;
 
-  std::vector<std::string> bodies;
-  std::vector<std::string> payloads;
-  std::vector<uint64_t> rowids;
-  std::vector<int64_t> pks;
-  bodies.reserve(rows.size());
-  payloads.reserve(rows.size());
-  rowids.reserve(rows.size());
-  pks.reserve(rows.size());
-  for (auto& row : rows) {
-    std::string payload;
-    encodeRow(sc, row, payload);
+  std::vector<std::string> bodies(payloads.size());
+  std::vector<uint64_t> rowids(payloads.size());
+  bodies.reserve(payloads.size());
+  for (size_t i = 0; i < payloads.size(); i++) {
     uint64_t rowid = t->nextRowid++;
-    int64_t pk = row[sc.pk].i;
-    std::string body;
+    std::string& body = bodies[i];
+    body.reserve(payloads[i].size() + 16);
     body.push_back((char)3);
     putVarint(body, t->id);
     putVarint(body, rowid);
-    for (int k = 0; k < 8; k++) body.push_back((char)((uint64_t)pk >> (8 * k)));
-    body.append(payload);
-    bodies.push_back(std::move(body));
-    payloads.push_back(std::move(payload));
-    rowids.push_back(rowid);
-    pks.push_back(pk);
+    for (int k = 0; k < 8; k++) body.push_back((char)((uint64_t)pks[i] >> (8 * k)));
+    body.append(payloads[i]);
+    rowids[i] = rowid;
   }
+  int64_t tt2 = g_insTiming ? nowMicros() : 0;
   std::vector<uint64_t> offs;
   appendRecords(bodies, offs);
+  int64_t tt3 = g_insTiming ? nowMicros() : 0;
   rs.affected = (int64_t)rowids.size();
   for (size_t i = 0; i < rowids.size(); i++) {
     // payload sits at the tail of the record body
@@ -373,6 +397,19 @@ void Database::execInsert(const Stmt& st, ResultSet& rs) {
     applyPendingInsert(*t, rowids[i], pks[i], payloads[i].data(), (uint32_t)payloads[i].size(),
                        payloadOff, true);
   }
+  if (g_insTiming) {
+    int64_t tt4 = nowMicros();
+    g_tCoerce += tt1 - tt0;
+    g_tEncode += tt2 - tt1;
+    g_tWal += tt3 - tt2;
+    g_tApply += tt4 - tt3;
+  }
+}
+
+void Database::dumpInsertTiming() {
+  if (!g_insTiming) return;
+  fprintf(stderr, "INSERT coerce=%.1fms encode=%.1fms wal=%.1fms apply=%.1fms\n",
+          g_tCoerce / 1000.0, g_tEncode / 1000.0, g_tWal / 1000.0, g_tApply / 1000.0);
 }
 
 void Database::execDelete(const Stmt& st, ResultSet& rs) {
@@ -515,8 +552,13 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
           throwErr(1235, "42000", "L2_DISTANCE requires the VECTOR column");
         int dim = sc.cols[it.distCol].len;
         std::string err;
-        if (!parseVectorLiteral(e->vecText, dim, it.q, err))
+        if (e->vecOk) {
+          if ((int)e->vec.size() != dim)
+            throwErr(1366, "HY000", "Incorrect vector value: vector dimension mismatch");
+          it.q = e->vec;
+        } else if (!parseVectorLiteral(e->vecText, dim, it.q, err)) {
           throwErr(1366, "HY000", "Incorrect vector value: " + err);
+        }
         it.header = e->hasAlias ? e->alias : e->raw;
       } else if (e->kind == Expr::COLUMN) {
         it.col = sc.colIndex(e->name);
@@ -565,8 +607,13 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
       if (orderDistCol != sc.vec)
         throwErr(1235, "42000", "L2_DISTANCE requires the VECTOR column");
       std::string err;
-      if (!parseVectorLiteral(oe->vecText, sc.cols[orderDistCol].len, orderQ, err))
+      if (oe->vecOk) {
+        if ((int)oe->vec.size() != sc.cols[orderDistCol].len)
+          throwErr(1366, "HY000", "Incorrect vector value: vector dimension mismatch");
+        orderQ = oe->vec;
+      } else if (!parseVectorLiteral(oe->vecText, sc.cols[orderDistCol].len, orderQ, err)) {
         throwErr(1366, "HY000", "Incorrect vector value: " + err);
+      }
     } else if (oe && oe->kind == Expr::COLUMN) {
       bool matched = false;
       for (size_t i = 0; i < items.size(); i++) {
@@ -632,26 +679,86 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
           results.push_back(Cand{(double)h.first, t->pkOf[h.second], h.second});
       }
     }
-    if (!usedIndex) {
-      std::vector<CandOut> buf((size_t)k);
-      int got = 0;
-      if (where) {
-        // Filter first: only surviving rows pay for a distance computation.
-        std::vector<uint32_t> hits;
-        hits.reserve(1024);
-        for (uint64_t r = 0; r < t->nextRowid; r++) {
-          if (!t->live[r]) continue;
-          if (!evalCond(*t, *where, r)) continue;
-          hits.push_back((uint32_t)r);
-        }
-        got = scanTopKGather(vbase, dim, hits.data(), hits.size(), t->pkOf.data(),
-                             orderQ.data(), (int)k, orderDesc ? 1 : 0, buf.data());
-      } else {
-        got = scanTopKRange(vbase, dim, t->live.data(), t->pkOf.data(), t->nextRowid,
-                            orderQ.data(), (int)k, orderDesc ? 1 : 0, buf.data());
+    // A LIMIT in the hundreds would make the k-wide insertion buffer quadratic
+    // (n * k). Collect every qualifying distance and partial-sort instead.
+    if (!usedIndex && k > 256) {
+      std::vector<Cand> all;
+      all.reserve((size_t)t->nextRowid);
+      for (uint64_t r = 0; r < t->nextRowid; r++) {
+        if (!t->live[r]) continue;
+        if (where && !evalCond(*t, *where, r)) continue;
+        all.push_back(Cand{(double)l2sq(vbase + r * (size_t)dim, orderQ.data(), dim), t->pkOf[r], r});
       }
-      for (int i = 0; i < got; i++)
-        results.push_back(Cand{(double)buf[i].d, buf[i].pk, buf[i].rowid});
+      auto cmp = [&](const Cand& a, const Cand& b) {
+        if (a.d != b.d) return orderDesc ? (a.d > b.d) : (a.d < b.d);
+        return a.pk < b.pk;
+      };
+      if ((int64_t)all.size() > k) {
+        std::partial_sort(all.begin(), all.begin() + (size_t)k, all.end(), cmp);
+        all.resize((size_t)k);
+      } else {
+        std::sort(all.begin(), all.end(), cmp);
+      }
+      results = std::move(all);
+      usedIndex = true;  // results already collected
+    }
+    if (!usedIndex) {
+      const uint64_t nrows = t->nextRowid;
+      const int kd = orderDesc ? 1 : 0;
+      // One chunk of the scan: rows [lo, hi) -> best k, ordered best first.
+      auto runChunk = [&](uint64_t lo, uint64_t hi, CandOut* out) -> int {
+        if (lo >= hi) return 0;
+        if (where) {
+          std::vector<uint32_t> hits;
+          hits.reserve((size_t)(hi - lo));
+          for (uint64_t r = lo; r < hi; r++) {
+            if (!t->live[r]) continue;
+            if (!evalCond(*t, *where, r)) continue;
+            hits.push_back((uint32_t)r);
+          }
+          return scanTopKGather(vbase, dim, hits.data(), hits.size(), t->pkOf.data(),
+                                orderQ.data(), (int)k, kd, out);
+        }
+        int got = scanTopKRange(vbase + lo * (size_t)dim, dim, t->live.data() + lo,
+                                t->pkOf.data() + lo, hi - lo, orderQ.data(), (int)k, kd, out);
+        for (int i = 0; i < got; i++) out[i].rowid += (uint32_t)lo;
+        return got;
+      };
+
+      // Parallel scan for tables large enough to pay for the fan-out. Each
+      // worker keeps its own top-k and the caller merges them, so the result
+      // set is identical to the single-threaded scan.
+      double work = (double)nrows * (double)std::max(dim, 1);
+      static const double parMin = getenv("MVDB_PAR_MIN") ? atof(getenv("MVDB_PAR_MIN")) : 1.5e6;
+      int threads = 1;
+      if (work >= parMin && k <= 256) {
+        threads = ThreadPool::get().size();
+        int maxChunks = (int)(work / 3.0e5);
+        if (maxChunks < 1) maxChunks = 1;
+        if (threads > maxChunks) threads = maxChunks;
+      }
+      if (threads <= 1) {
+        std::vector<CandOut> buf((size_t)k);
+        int got = runChunk(0, nrows, buf.data());
+        for (int i = 0; i < got; i++)
+          results.push_back(Cand{(double)buf[i].d, buf[i].pk, buf[i].rowid});
+      } else {
+        std::vector<std::vector<CandOut>> parts((size_t)threads);
+        std::vector<int> counts((size_t)threads, 0);
+        std::vector<const CandOut*> ptrs((size_t)threads, nullptr);
+        uint64_t chunk = (nrows + (uint64_t)threads - 1) / (uint64_t)threads;
+        ThreadPool::get().parallelFor(threads, [&](int ci) {
+          parts[ci].resize((size_t)k);
+          uint64_t lo = (uint64_t)ci * chunk;
+          uint64_t hi = std::min<uint64_t>(nrows, lo + chunk);
+          counts[ci] = runChunk(lo, hi, parts[ci].data());
+        });
+        for (int i = 0; i < threads; i++) ptrs[i] = parts[i].data();
+        std::vector<CandOut> merged((size_t)k);
+        int got = mergeTopK(ptrs.data(), counts.data(), threads, (int)k, kd, merged.data());
+        for (int i = 0; i < got; i++)
+          results.push_back(Cand{(double)merged[i].d, merged[i].pk, merged[i].rowid});
+      }
     }
     std::sort(results.begin(), results.end(), [&](const Cand& a, const Cand& b) {
       if (a.d != b.d) return orderDesc ? (a.d > b.d) : (a.d < b.d);
@@ -660,10 +767,10 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
     if ((int64_t)results.size() > k) results.resize((size_t)k);
     size_t skip = (size_t)std::min<int64_t>(off, (int64_t)results.size());
     int64_t emitted = 0;
+    std::vector<Value> row;
     for (size_t ri = skip; ri < results.size(); ri++) {
       if (emitted++ >= lim) break;
       const Cand& c = results[ri];
-      std::vector<Value> row;
       decodeRowAt(*t, c.rowid, row);
       std::vector<std::string> out;
       for (auto& it : items) {
@@ -739,9 +846,9 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
     }
     if (lim >= 0 && (int64_t)rows.size() > lim) rows.resize((size_t)lim);
   }
+  std::vector<Value> outRow;
   for (auto& sr : rows) {
-    std::vector<Value> row;
-    decodeRowAt(*t, sr.rowid, row);
+    decodeRowAt(*t, sr.rowid, outRow);
     std::vector<std::string> out;
     for (auto& it : items) {
       if (it.dist) {
@@ -750,7 +857,7 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
       } else if (it.isConst) {
         out.push_back(formatValue(it.cval));
       } else {
-        out.push_back(formatValue(row[it.col]));
+        out.push_back(formatValue(outRow[it.col]));
       }
     }
     rs.rows.push_back(std::move(out));
@@ -918,6 +1025,7 @@ void Database::execute(const std::string& sql, ResultSet& rs) {
 }
 
 void Database::close() {
+  dumpInsertTiming();
   if (inTxn_) {
     try {
       rollbackTxn();

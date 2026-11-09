@@ -1,6 +1,6 @@
 CXX ?= g++
-CXXFLAGS ?= -O2 -std=c++17 -Wall -Wextra
-LDFLAGS ?=
+CXXFLAGS ?= -O2 -std=c++17 -Wall -Wextra -pthread
+LDFLAGS ?= -pthread
 
 SRC := $(wildcard src/*.cpp)
 OBJ := $(SRC:.cpp=.o)

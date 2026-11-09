@@ -14,6 +14,8 @@ namespace mvdb {
 VecStore::~VecStore() {
   map_.unmap();
   file_.close();
+  free(mem_);
+  mem_ = nullptr;
 }
 
 void VecStore::init(int dim, const std::string& path, size_t memBudgetBytes) {
@@ -23,13 +25,15 @@ void VecStore::init(int dim, const std::string& path, size_t memBudgetBytes) {
   budget_ = memBudgetBytes;
   capRows_ = 0;
   disk_ = false;
-  mem_.clear();
+  free(mem_);
+  mem_ = nullptr;
 }
 
 void VecStore::reset() {
   map_.unmap();
   file_.close();
-  mem_.clear();
+  free(mem_);
+  mem_ = nullptr;
   capRows_ = 0;
   disk_ = false;
   fileCap_ = 0;
@@ -38,15 +42,15 @@ void VecStore::reset() {
 void VecStore::switchToDisk() {
   disk_ = true;
   if (!file_.openWrite(path_)) throwErr(1105, "HY000", "cannot open vector file");
-  if (!mem_.empty()) {
-    file_.writeAt(0, mem_.data(), mem_.size() * sizeof(float));
+  if (capRows_ > 0) {
+    file_.writeAt(0, mem_, (size_t)(capRows_ * slot_));
   }
   uint64_t bytes = (uint64_t)capRows_ * slot_;
   if (bytes == 0) bytes = slot_ * 1024;
   file_.truncate(bytes);
   fileCap_ = bytes;
-  mem_.clear();
-  mem_.shrink_to_fit();
+  free(mem_);
+  mem_ = nullptr;
   if (!map_.map(file_, fileCap_, true)) throwErr(1105, "HY000", "cannot map vector file");
 }
 
@@ -63,17 +67,25 @@ void VecStore::growDisk(uint64_t needRows) {
   capRows_ = newCap;
 }
 
+// Grows the in-memory store. realloc is deliberate: glibc serves large blocks
+// with mmap and can usually extend them with mremap, so doubling a 100 MB
+// store costs microseconds instead of a full copy plus a zero-fill.
+bool VecStore::growMem(uint64_t needRows) {
+  uint64_t newCap = std::max<uint64_t>(needRows, std::max<uint64_t>(capRows_ * 2, 1024));
+  uint64_t bytes = newCap * slot_;
+  if (bytes > budget_) return false;
+  float* p = (float*)realloc(mem_, (size_t)bytes);
+  if (!p) return false;
+  mem_ = p;
+  capRows_ = newCap;
+  return true;
+}
+
 void VecStore::ensure(uint64_t rowid) {
   if (rowid < capRows_) return;
   uint64_t need = rowid + 1;
   if (!disk_) {
-    uint64_t bytes = need * (uint64_t)dim_ * sizeof(float);
-    if (bytes <= budget_) {
-      uint64_t newCap = std::max<uint64_t>(need, std::max<uint64_t>(capRows_ * 2, 1024));
-      mem_.resize(newCap * (uint64_t)dim_, 0.0f);
-      capRows_ = newCap;
-      return;
-    }
+    if (growMem(need)) return;
     switchToDisk();
     growDisk(need);
     return;
@@ -89,12 +101,12 @@ void VecStore::set(uint64_t rowid, const float* v) {
 
 float* VecStore::ptr(uint64_t rowid) {
   if (disk_) return (float*)(map_.data() + rowid * slot_);
-  return mem_.data() + rowid * (uint64_t)dim_;
+  return mem_ + rowid * (uint64_t)dim_;
 }
 
 const float* VecStore::ptr(uint64_t rowid) const {
   if (disk_) return (const float*)(map_.data() + rowid * slot_);
-  return mem_.data() + rowid * (uint64_t)dim_;
+  return mem_ + rowid * (uint64_t)dim_;
 }
 
 // ---------------------------------------------------------------- PkIndex ---

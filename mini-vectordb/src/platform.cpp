@@ -9,13 +9,17 @@ namespace mvdb {
 
 namespace {
 struct Crc32Table {
-  uint32_t t[256];
+  uint32_t t[8][256];
   Crc32Table() {
     for (uint32_t i = 0; i < 256; i++) {
       uint32_t c = i;
       for (int k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-      t[i] = c;
+      t[0][i] = c;
     }
+    // Slicing-by-8: each further table advances the CRC by one byte.
+    for (int k = 1; k < 8; k++)
+      for (uint32_t i = 0; i < 256; i++)
+        t[k][i] = (t[k - 1][i] >> 8) ^ t[0][t[k - 1][i] & 0xff];
   }
 };
 const Crc32Table& crcTable() {
@@ -26,9 +30,22 @@ const Crc32Table& crcTable() {
 
 uint32_t crc32Of(const void* data, size_t len) {
   const Crc32Table& tab = crcTable();
-  uint32_t c = 0xFFFFFFFFu;
   const uint8_t* p = (const uint8_t*)data;
-  for (size_t i = 0; i < len; i++) c = tab.t[(c ^ p[i]) & 0xff] ^ (c >> 8);
+  uint32_t c = 0xFFFFFFFFu;
+  // Bulk of the WAL payload is long records; eight bytes per iteration keeps
+  // the checksum off the insert hot path.
+  while (len >= 8) {
+    uint32_t one, two;
+    memcpy(&one, p, 4);
+    memcpy(&two, p + 4, 4);
+    one ^= c;
+    c = tab.t[7][one & 0xff] ^ tab.t[6][(one >> 8) & 0xff] ^ tab.t[5][(one >> 16) & 0xff] ^
+        tab.t[4][(one >> 24) & 0xff] ^ tab.t[3][two & 0xff] ^ tab.t[2][(two >> 8) & 0xff] ^
+        tab.t[1][(two >> 16) & 0xff] ^ tab.t[0][(two >> 24) & 0xff];
+    p += 8;
+    len -= 8;
+  }
+  for (size_t i = 0; i < len; i++) c = tab.t[0][(c ^ p[i]) & 0xff] ^ (c >> 8);
   return c ^ 0xFFFFFFFFu;
 }
 
@@ -276,6 +293,143 @@ void MappedFile::unmap() {
 #endif
   base_ = nullptr;
   len_ = 0;
+}
+
+// -------------------------------------------------------------- thread pool ---
+
+namespace {
+
+// CPUs this process may actually run on. hardware_concurrency() reports the
+// host's CPU count, which overstates a container with a CPU quota; oversizing
+// the pool there would make the workers fight the scanning thread for cores.
+int usableCpus() {
+  unsigned hw = std::thread::hardware_concurrency();
+  if (hw == 0) hw = 1;
+  int n = (int)hw;
+#ifndef _WIN32
+  // Affinity mask: containers pinned with cpuset report all host CPUs above.
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  if (sched_getaffinity(0, sizeof(set), &set) == 0) {
+    int c = CPU_COUNT(&set);
+    if (c >= 1 && c < n) n = c;
+  }
+  auto clampQuota = [&](double quota, double period) {
+    if (quota > 0 && period > 0) {
+      int q = (int)((quota + period - 1) / period);
+      if (q >= 1 && q < n) n = q;
+    }
+  };
+  if (FILE* f = fopen("/sys/fs/cgroup/cpu.max", "r")) {  // cgroup v2
+    char q[64] = {0};
+    long long period = 0;
+    if (fscanf(f, "%63s %lld", q, &period) == 2 && strcmp(q, "max") != 0)
+      clampQuota(atof(q), (double)period);
+    fclose(f);
+  }
+  if (FILE* f = fopen("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r")) {  // cgroup v1
+    long long quota = -1, period = 0;
+    if (fscanf(f, "%lld", &quota) == 1 && quota > 0) {
+      if (FILE* g = fopen("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r")) {
+        if (fscanf(g, "%lld", &period) == 1) clampQuota((double)quota, (double)period);
+        fclose(g);
+      }
+    }
+    fclose(f);
+  }
+#endif
+  return n < 1 ? 1 : n;
+}
+
+inline void cpuRelax() {
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+  __builtin_ia32_pause();
+#else
+  std::this_thread::yield();
+#endif
+}
+
+}  // namespace
+
+ThreadPool& ThreadPool::get() {
+  static ThreadPool pool;
+  return pool;
+}
+
+ThreadPool::ThreadPool() {
+  int wanted = usableCpus();
+  if (const char* e = getenv("MVDB_THREADS")) {
+    int v = atoi(e);
+    if (v > 0) wanted = v;
+  }
+  if (wanted > 8) wanted = 8;
+  if (wanted < 1) wanted = 1;
+  workers_.reserve((size_t)(wanted - 1));
+  for (int i = 1; i < wanted; i++) workers_.emplace_back([this] { loop(); });
+}
+
+ThreadPool::~ThreadPool() {
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    stop_ = true;
+    stopAtom_.store(true, std::memory_order_release);
+  }
+  cv_.notify_all();
+  for (auto& t : workers_)
+    if (t.joinable()) t.join();
+}
+
+void ThreadPool::loop() {
+  uint64_t seen = 0;
+  static const int kSpin = getenv("MVDB_SPIN") ? atoi(getenv("MVDB_SPIN")) : 50000;
+  for (;;) {
+    // Spin briefly before sleeping: back-to-back queries fan out again within
+    // microseconds, and a futex round trip would cost more than the scan.
+    for (int i = 0; i < kSpin && genAtom_.load(std::memory_order_acquire) == seen; i++) cpuRelax();
+    std::unique_lock<std::mutex> lk(mu_);
+    if (gen_ == seen) {
+      cv_.wait(lk, [&] { return stop_ || gen_ != seen; });
+    }
+    if (stop_) return;
+    seen = gen_;
+    while (next_ < jobs_) {
+      int i = next_++;
+      const std::function<void(int)>* fn = job_;
+      lk.unlock();
+      (*fn)(i);
+      lk.lock();
+    }
+    if (--active_ == 0) done_.notify_one();
+  }
+}
+
+void ThreadPool::parallelFor(int jobs, const std::function<void(int)>& fn) {
+  if (jobs <= 1 || workers_.empty()) {
+    for (int i = 0; i < jobs; i++) fn(i);
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    job_ = &fn;
+    jobs_ = jobs;
+    next_ = 0;
+    active_ = (int)workers_.size();
+    gen_++;
+    genAtom_.store(gen_, std::memory_order_release);
+  }
+  cv_.notify_all();
+  for (;;) {
+    int i;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      if (next_ >= jobs_) break;
+      i = next_++;
+    }
+    fn(i);
+  }
+  std::unique_lock<std::mutex> lk(mu_);
+  done_.wait(lk, [&] { return active_ == 0; });
+  job_ = nullptr;
 }
 
 }  // namespace mvdb

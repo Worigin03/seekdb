@@ -29,4 +29,9 @@ int scanTopKRange(const float* base, int dim, const uint8_t* live, const int64_t
 int scanTopKGather(const float* base, int dim, const uint32_t* rowids, size_t count,
                    const int64_t* pks, const float* q, int k, int desc, CandOut* out);
 
+// Merges per-chunk result lists (each already ordered best-first by the same
+// comparator) into the global best k. Returns the number written to `out`.
+int mergeTopK(const CandOut* const* parts, const int* counts, int nparts, int k, int desc,
+              CandOut* out);
+
 }  // namespace mvdb

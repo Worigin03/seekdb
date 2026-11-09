@@ -9,6 +9,10 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <atomic>
+#include <functional>
+#include <thread>
+#include <condition_variable>
 #include <stdexcept>
 
 #ifdef _WIN32
@@ -20,6 +24,7 @@
 #else
 #include <unistd.h>
 #include <fcntl.h>
+#include <sched.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -110,6 +115,40 @@ void makeDirs(const std::string& path);
 bool pathExists(const std::string& path);
 bool readWholeFile(const std::string& path, std::string& out);
 bool writeWholeFileAtomic(const std::string& path, const std::string& data);
+
+// ------------------------------------------------------------- thread pool ---
+//
+// Small persistent pool used to spread one top-k scan over several cores. The
+// calling thread takes part in every fan-out, so a single-core machine pays no
+// extra wake-up cost when the fan-out is skipped by the caller.
+class ThreadPool {
+ public:
+  static ThreadPool& get();
+
+  // Number of threads that can run a chunk, including the caller.
+  int size() const { return (int)workers_.size() + 1; }
+
+  // Runs fn(i) for i in [0, jobs); returns when every index is done.
+  void parallelFor(int jobs, const std::function<void(int)>& fn);
+
+ private:
+  ThreadPool();
+  ~ThreadPool();
+  void loop();
+
+  std::vector<std::thread> workers_;
+  std::mutex mu_;
+  std::condition_variable cv_;
+  std::condition_variable done_;
+  const std::function<void(int)>* job_ = nullptr;
+  int jobs_ = 0;
+  int next_ = 0;
+  int active_ = 0;
+  uint64_t gen_ = 0;
+  std::atomic<uint64_t> genAtom_{0};
+  bool stop_ = false;
+  std::atomic<bool> stopAtom_{false};
+};
 
 // ------------------------------------------------------------------ file ---
 

@@ -19,7 +19,7 @@ COPY mini-vectordb/ /build/mini-vectordb/
 # ignores files named Makefile, so a Makefile cannot be relied upon being
 # present in a checkout of this branch.
 RUN cd /build/mini-vectordb \
- && g++ -O3 -std=c++17 -funroll-loops -static-libstdc++ -static-libgcc \
+ && g++ -O3 -std=c++17 -funroll-loops -pthread -static-libstdc++ -static-libgcc \
       -o minivectordb src/*.cpp \
  && strip minivectordb
 

@@ -1,5 +1,8 @@
 #include "simd.h"
 
+#include <queue>
+#include <vector>
+
 #if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 #define MVDB_X86 1
 #include <immintrin.h>
@@ -28,20 +31,29 @@ static float l2sqScalar(const float* a, const float* b, int d) {
 }
 
 #if MVDB_X86
-__attribute__((target("avx2,fma"))) static float l2sqAvx2(const float* a, const float* b, int d) {
+__attribute__((target("avx2,fma"))) static inline float l2sqAvx2(const float* __restrict a,
+                                                                const float* __restrict b,
+                                                                int d) {
   __m256 s0 = _mm256_setzero_ps(), s1 = _mm256_setzero_ps();
+  __m256 s2 = _mm256_setzero_ps(), s3 = _mm256_setzero_ps();
   int i = 0;
-  for (; i + 16 <= d; i += 16) {
+  // Four independent accumulator chains: FMA latency is 4-5 cycles, so two
+  // chains leave the FMA ports half idle on a 128/256-dim scan.
+  for (; i + 32 <= d; i += 32) {
     __m256 x0 = _mm256_sub_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i));
     __m256 x1 = _mm256_sub_ps(_mm256_loadu_ps(a + i + 8), _mm256_loadu_ps(b + i + 8));
+    __m256 x2 = _mm256_sub_ps(_mm256_loadu_ps(a + i + 16), _mm256_loadu_ps(b + i + 16));
+    __m256 x3 = _mm256_sub_ps(_mm256_loadu_ps(a + i + 24), _mm256_loadu_ps(b + i + 24));
     s0 = _mm256_fmadd_ps(x0, x0, s0);
     s1 = _mm256_fmadd_ps(x1, x1, s1);
+    s2 = _mm256_fmadd_ps(x2, x2, s2);
+    s3 = _mm256_fmadd_ps(x3, x3, s3);
   }
   for (; i + 8 <= d; i += 8) {
     __m256 x = _mm256_sub_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i));
     s0 = _mm256_fmadd_ps(x, x, s0);
   }
-  s0 = _mm256_add_ps(s0, s1);
+  s0 = _mm256_add_ps(_mm256_add_ps(s0, s1), _mm256_add_ps(s2, s3));
   __m128 lo = _mm256_castps256_ps128(s0);
   __m128 hi = _mm256_extractf128_ps(s0, 1);
   lo = _mm_add_ps(lo, hi);
@@ -201,6 +213,40 @@ int scanTopKGather(const float* base, int dim, const uint32_t* rowids, size_t co
   if (g_useAvx2) return scanGatherAvx2(base, dim, rowids, count, pks, q, k, desc, out);
 #endif
   return scanGatherScalar(base, dim, rowids, count, pks, q, k, desc, out);
+}
+
+int mergeTopK(const CandOut* const* parts, const int* counts, int nparts, int k, int desc,
+              CandOut* out) {
+  struct Item {
+    float d;
+    int64_t pk;
+    uint32_t rowid;
+    int part;
+  };
+  // "after" orders items worst-last, so the heap top is always the best one.
+  auto after = [desc](const Item& a, const Item& b) {
+    if (a.d != b.d) return desc ? (a.d < b.d) : (a.d > b.d);
+    return a.pk > b.pk;
+  };
+  std::priority_queue<Item, std::vector<Item>, decltype(after)> heap(after);
+  int idx[64];
+  if (nparts > 64) nparts = 64;
+  for (int p = 0; p < nparts; p++) {
+    idx[p] = 0;
+    if (counts[p] > 0) heap.push(Item{parts[p][0].d, parts[p][0].pk, parts[p][0].rowid, p});
+  }
+  int n = 0;
+  while (!heap.empty() && n < k) {
+    Item it = heap.top();
+    heap.pop();
+    out[n++] = CandOut{it.d, it.pk, it.rowid};
+    int p = it.part;
+    if (++idx[p] < counts[p]) {
+      const CandOut& c = parts[p][idx[p]];
+      heap.push(Item{c.d, c.pk, c.rowid, p});
+    }
+  }
+  return n;
 }
 
 }  // namespace mvdb

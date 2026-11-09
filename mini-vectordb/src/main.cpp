@@ -79,65 +79,6 @@ static int readStdin(char* dst, int cap) {
 #endif
 }
 
-// Heuristic: does the accumulated text still need more input? True when a
-// quote/bracket is open or the line ends on something that cannot end a
-// statement (VALUES, WHERE, a dangling comma ...). The official case format is
-// "one statement per line", so this only guards against split statements.
-static bool looksIncomplete(const std::string& s) {
-  int par = 0, brk = 0;
-  bool inS = false, inD = false, inB = false;
-  for (size_t i = 0; i < s.size(); i++) {
-    char c = s[i];
-    if (inS) {
-      if (c == '\\' && i + 1 < s.size()) { i++; continue; }
-      if (c == '\'') inS = false;
-      continue;
-    }
-    if (inD) {
-      if (c == '\\' && i + 1 < s.size()) { i++; continue; }
-      if (c == '"') inD = false;
-      continue;
-    }
-    if (inB) {
-      if (c == '`') inB = false;
-      continue;
-    }
-    if (c == '\'') { inS = true; continue; }
-    if (c == '"') { inD = true; continue; }
-    if (c == '`') { inB = true; continue; }
-    if (c == '-' && i + 1 < s.size() && s[i + 1] == '-') {
-      while (i < s.size() && s[i] != '\n') i++;
-      continue;
-    }
-    if (c == '(') par++;
-    else if (c == ')') par--;
-    else if (c == '[') brk++;
-    else if (c == ']') brk--;
-  }
-  if (inS || inD || inB || par > 0 || brk > 0) return true;
-  std::string t = trimSpace(s);
-  if (t.empty()) return false;
-  char last = t.back();
-  if (last == ',' || last == '=' || last == '(' || last == '+' || last == '-' || last == '*' ||
-      last == '/' || last == '<' || last == '>')
-    return true;
-  std::string w;
-  for (size_t i = t.size(); i > 0; i--) {
-    char c = t[i - 1];
-    if (!isalpha((unsigned char)c)) break;
-    w.insert(w.begin(), c);
-  }
-  w = toLowerAscii(w);
-  // Only tokens that cannot legally end a statement. Column names such as
-  // "value" or "key" are deliberately absent: treating them as openers would
-  // swallow a complete "ORDER BY value" and deadlock the driver.
-  static const char* kOpen[] = {"values", "where", "and", "or", "not", "set", "into",
-                                "from", "order", "by", "limit", "as", "on", "using", "join"};
-  for (const char* k : kOpen)
-    if (w == k) return true;
-  return false;
-}
-
 static void printResult(const Database::ResultSet& rs) {
   std::string out;
   out.reserve(4096);
@@ -215,16 +156,29 @@ int main(int argc, char** argv) {
     fprintf(stderr, "minivectordb: batch mode (no readiness handshake)\n");
   }
 
-  std::string buf;
+  Splitter sp;
   char raw[65536];
   bool eof = false;
   bool stop = false;
+  static const bool g_stats = getenv("MVDB_LOOPSTAT") != nullptr;
+  int64_t stRead = 0, stDrain = 0, stExec = 0, stPrint = 0, stPoll = 0;
+  int64_t nStmt = 0;
 
   // Executes one statement and writes its response. Returns false when the
   // statement asks the process to exit.
   auto runOne = [&](const std::string& sql) -> bool {
-    std::string s = trimSpace(sql);
-    if (s.empty()) return true;
+    size_t ta = 0, tb = sql.size();
+    while (ta < tb && isspace((unsigned char)sql[ta])) ta++;
+    while (tb > ta && isspace((unsigned char)sql[tb - 1])) tb--;
+    if (ta == tb) return true;
+    std::string trimmed;
+    const std::string* sp2 = &sql;
+    if (ta != 0 || tb != sql.size()) {
+      trimmed.assign(sql, ta, tb - ta);
+      sp2 = &trimmed;
+    }
+    const std::string& s = *sp2;
+    nStmt++;
     // Shutdown spellings a driver may use for the package's --restart step.
     if (iequals(s, "exit") || iequals(s, "quit") || iequals(s, "bye") || iequals(s, "shutdown") ||
         iequals(s, "stop") || s == "\\q" || s == "--exit" || s == "--quit" || s == "--shutdown")
@@ -237,7 +191,7 @@ int main(int argc, char** argv) {
       return true;
     }
     Database::ResultSet rs;
-    int64_t t0 = g_debug ? nowMicros() : 0;
+    int64_t t0 = g_debug || g_stats ? nowMicros() : 0;
     try {
       db.execute(s, rs);
     } catch (const SqlError& e) {
@@ -251,6 +205,8 @@ int main(int argc, char** argv) {
       fflush(stdout);
       return true;
     }
+    int64_t t1 = g_stats ? nowMicros() : 0;
+    if (g_stats) stExec += t1 - t0;
     if (rs.hasResult) printResult(rs);
     if (!g_quiet) {
       // Status line carries the row count: affected rows for DML, rows in the
@@ -259,51 +215,54 @@ int main(int argc, char** argv) {
       fprintf(stdout, "%s %lld\n", g_ok.c_str(), n);
     }
     fflush(stdout);
+    if (g_stats) stPrint += nowMicros() - t1;
     if (g_debug) fprintf(stderr, "[%lld us] %s\n", (long long)(nowMicros() - t0), s.c_str());
     return true;
   };
 
-  // Executes every statement that is already complete in `buf`: one per ';',
-  // plus whole lines (the case format is "one statement per line").
+  // Executes every statement that is already complete: one per ';', plus
+  // whole lines (the case format is "one statement per line").
   auto drain = [&]() {
     std::string stmt;
-    while (!stop && extractStatement(buf, stmt)) {
+    while (!stop && sp.next(stmt)) {
       if (!runOne(stmt)) stop = true;
-    }
-    while (!stop && !buf.empty()) {
-      size_t nl = buf.find('\n');
-      if (nl == std::string::npos) break;
-      std::string line = buf.substr(0, nl);
-      if (looksIncomplete(line)) break;   // e.g. "INSERT INTO t VALUES"
-      buf.erase(0, nl + 1);
-      if (!runOne(line)) stop = true;
     }
   };
 
   while (!stop) {
+    int64_t p0 = g_stats ? nowMicros() : 0;
     int st = stdinState(40);
+    if (g_stats) stPoll += nowMicros() - p0;
     if (st > 0) {
+      int64_t r0 = g_stats ? nowMicros() : 0;
       int n = readStdin(raw, (int)sizeof(raw));
+      if (g_stats) stRead += nowMicros() - r0;
       if (n <= 0) eof = true;
-      else buf.append(raw, (size_t)n);
+      else sp.append(raw, (size_t)n);
     } else if (st < 0) {
       eof = true;
-    } else if (!buf.empty()) {
+    } else if (!sp.empty()) {
       // Nothing more is queued, so the peer is waiting for this answer: what
       // is left in the buffer is the statement, even without ';' or newline.
-      std::string text = trimSpace(buf);
-      buf.clear();
-      if (!text.empty() && !runOne(text)) stop = true;
+      std::string text;
+      if (sp.takeRest(text) && !runOne(text)) stop = true;
     }
     if (stop) break;
+    int64_t d0 = g_stats ? nowMicros() : 0;
     drain();
+    if (g_stats) stDrain += nowMicros() - d0;
     if (stop) break;
     if (eof) {
-      std::string text = trimSpace(buf);
-      buf.clear();
-      if (!text.empty() && !runOne(text)) break;
-      if (buf.empty()) break;
+      std::string text;
+      if (sp.takeRest(text) && !runOne(text)) break;
+      if (sp.empty()) break;
     }
+  }
+
+  if (g_stats) {
+    fprintf(stderr, "LOOP stmts=%lld poll=%.1fms read=%.1fms drain=%.1fms exec=%.1fms print=%.1fms\n",
+            (long long)nStmt, stPoll / 1000.0, stRead / 1000.0, stDrain / 1000.0, stExec / 1000.0,
+            stPrint / 1000.0);
   }
 
   db.close();

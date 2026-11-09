@@ -172,8 +172,9 @@ void encodeRow(const Schema& sc, const std::vector<Value>& row, std::string& out
 
 bool decodeRow(const Schema& sc, const char* p, size_t n, int64_t pk, std::vector<Value>& out) {
   const char* end = p + n;
-  out.clear();
-  out.resize(sc.cols.size());
+  // Keeps the previous buffers alive so a caller that decodes row after row
+  // (result materialisation, filter caches) does not allocate per row.
+  if (out.size() != sc.cols.size()) out.resize(sc.cols.size());
   for (size_t i = 0; i < sc.cols.size(); i++) {
     Value& v = out[i];
     v.type = sc.cols[i].type;
@@ -201,7 +202,7 @@ bool decodeRow(const Schema& sc, const char* p, size_t n, int64_t pk, std::vecto
       case Type::VECTOR: {
         int dim = sc.cols[i].len;
         if (p + (size_t)dim * 4 > end) return false;
-        v.v.resize(dim);
+        v.v.resize((size_t)dim);
         memcpy(v.v.data(), p, (size_t)dim * 4);
         p += (size_t)dim * 4;
         break;
