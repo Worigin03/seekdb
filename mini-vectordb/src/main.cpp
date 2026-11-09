@@ -204,7 +204,7 @@ int main(int argc, char** argv) {
   // few hundred milliseconds lets us serve both: when input is already pending
   // we stay silent and never inject an unexpected line into the result stream.
   bool announce = !g_quiet;
-  int readyDelayMs = 400;
+  int readyDelayMs = 800;
   if (const char* e = getenv("MVDB_READY_DELAY_MS")) readyDelayMs = atoi(e);
   if (announce && stdinPending(readyDelayMs)) announce = false;
   if (announce) {
