@@ -1,0 +1,7 @@
+# Local test data / build leftovers are never part of the image.
+mvdb-*
+mini-vectordb/*.o
+mini-vectordb/minivectordb
+mini-vectordb/minivectordb.exe
+mini-vectordb/tmpbench/
+**/__pycache__/

@@ -1,0 +1,11 @@
+# Build output
+*.o
+minivectordb
+minivectordb.exe
+
+# Local benchmark scratch space
+tmpbench/
+
+# Test / benchmark data directories (created by tests/*.py at runtime)
+../mvdb-*/
+mvdb-*/
