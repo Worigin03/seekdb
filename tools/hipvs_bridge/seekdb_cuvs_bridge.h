@@ -1,5 +1,7 @@
 #ifndef SEEKDB_CUVS_BRIDGE_H
 #define SEEKDB_CUVS_BRIDGE_H
+#include <stddef.h>
+#include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,6 +27,11 @@ int   seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
 void  seekdb_cuvs_free(void* handle);
 int seekdb_cuvs_serialize(void* handle, const char* filename);
 void* seekdb_cuvs_deserialize(const char* filename, long n, long dim);
+/* Optional compact snapshot API, provided by the bridge with graph support. */
+size_t seekdb_cuvs_graph_size(void* handle);
+int seekdb_cuvs_copy_graph(void* handle, uint32_t* edges, size_t count);
+void* seekdb_cuvs_from_graph(const float* base, long n, long dim,
+                           const uint32_t* edges, size_t degree);
 #ifdef __cplusplus
 }
 #endif

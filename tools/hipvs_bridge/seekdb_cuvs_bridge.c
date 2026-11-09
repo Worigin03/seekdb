@@ -154,7 +154,7 @@ void seekdb_cuvs_free(void* handle)
   sk_cuvs_index* h = (sk_cuvs_index*)handle;
   if (!h) return;
   cuvsCagraIndexDestroy(h->idx);
-  cuvsCagraIndexParamsDestroy(h->ip);
+  if (h->ip) cuvsCagraIndexParamsDestroy(h->ip);
   if (h->sp) cuvsCagraSearchParamsDestroy(h->sp);
   if (h->dd) cuvsRMMFree(h->res, h->dd, sizeof(float) * h->result_capacity);
   if (h->nd) cuvsRMMFree(h->res, h->nd, sizeof(unsigned int) * h->result_capacity);
@@ -208,6 +208,90 @@ fail:
   free(index);
   return NULL;
 }
+
+#ifdef SEEKDB_EXPERIMENTAL_GPU_PRUNE
+size_t seekdb_cuvs_graph_size(void* handle)
+{
+  sk_cuvs_index* index = (sk_cuvs_index*)handle;
+  int64_t degree = 0;
+  if (!index || index->n <= 0 ||
+      cuvsCagraIndexGetGraphDegree(index->idx, &degree) != CUVS_SUCCESS ||
+      degree <= 0 || degree > index->n ||
+      (uint64_t)index->n > SIZE_MAX / sizeof(uint32_t) / (uint64_t)degree) {
+    return 0;
+  }
+  return (size_t)index->n * (size_t)degree;
+}
+
+int seekdb_cuvs_copy_graph(void* handle, uint32_t* edges, size_t count)
+{
+  sk_cuvs_index* index = (sk_cuvs_index*)handle;
+  if (!index || index->n <= 0 || !edges || count == 0 || count > SIZE_MAX / sizeof(*edges)) return 1;
+  DLManagedTensor graph = {0};
+  if (cuvsCagraIndexGetGraph(index->idx, &graph) != CUVS_SUCCESS) return 1;
+  const DLTensor* tensor = &graph.dl_tensor;
+  const size_t degree = count / (size_t)index->n;
+  int ret = 1;
+  if (tensor->ndim == 2 && tensor->shape && tensor->data &&
+      tensor->shape[0] == index->n && tensor->shape[1] == (int64_t)degree &&
+      count % (size_t)index->n == 0 && tensor->dtype.code == kDLUInt &&
+      tensor->dtype.bits == 32 && tensor->dtype.lanes == 1 &&
+      (!tensor->strides || (tensor->strides[0] == (int64_t)degree && tensor->strides[1] == 1)) &&
+      cuvsStreamSync(index->res) == CUVS_SUCCESS) {
+    const char* data = (const char*)tensor->data + tensor->byte_offset;
+    ret = cudaMemcpy(edges, data, count * sizeof(*edges), cudaMemcpyDefault) == cudaSuccess ? 0 : 1;
+  }
+  if (graph.deleter) graph.deleter(&graph);
+  if (ret == 0) {
+    for (size_t i = 0; i < count; ++i) {
+      if (edges[i] >= (uint64_t)index->n) return 1;
+    }
+  }
+  return ret;
+}
+
+void* seekdb_cuvs_from_graph(const float* base, long n, long dim,
+                           const uint32_t* edges, size_t degree)
+{
+  if (!base || !edges || n <= 0 || (uint64_t)n > UINT32_MAX || dim <= 0 ||
+      degree == 0 || degree > (size_t)n ||
+      (size_t)n > SIZE_MAX / sizeof(*edges) / degree ||
+      (size_t)n > SIZE_MAX / sizeof(*base) / (size_t)dim) return NULL;
+  for (size_t i = 0; i < (size_t)n * degree; ++i) {
+    if (edges[i] >= (uint32_t)n) return NULL;
+  }
+
+  sk_cuvs_index* index = (sk_cuvs_index*)calloc(1, sizeof(*index));
+  if (!index) return NULL;
+  if (cuvsResourcesCreate(&index->res) != CUVS_SUCCESS) goto fail;
+  if (cuvsCagraIndexCreate(&index->idx) != CUVS_SUCCESS) goto fail_res;
+  int64_t data_shape[2] = {n, dim};
+  int64_t graph_shape[2] = {n, (int64_t)degree};
+  DLManagedTensor data = {0};
+  data.dl_tensor.data = (void*)base;
+  data.dl_tensor.device.device_type = kDLCPU;
+  data.dl_tensor.ndim = 2;
+  data.dl_tensor.dtype = (DLDataType){kDLFloat, 32, 1};
+  data.dl_tensor.shape = data_shape;
+  DLManagedTensor graph = data;
+  graph.dl_tensor.data = (void*)edges;
+  graph.dl_tensor.dtype.code = kDLUInt;
+  graph.dl_tensor.shape = graph_shape;
+  if (cuvsCagraIndexFromArgs(index->res, L2Expanded, &graph, &data, index->idx) != CUVS_SUCCESS ||
+      cuvsStreamSync(index->res) != CUVS_SUCCESS) {
+    cuvsCagraIndexDestroy(index->idx);
+    goto fail_res;
+  }
+  index->n = n;
+  index->dim = dim;
+  return index;
+fail_res:
+  cuvsResourcesDestroy(index->res);
+fail:
+  free(index);
+  return NULL;
+}
+#endif
 
 int seekdb_cuvs_cagra_knn(const float* base, long n, long dim,
                           const float* query, long nq, long topk,
