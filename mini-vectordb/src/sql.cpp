@@ -759,14 +759,25 @@ class Parser {
       if (acceptKeyword("DESC")) st.select.orderDesc = true;
       else acceptKeyword("ASC");
     }
+    // LIMIT n | LIMIT off, n | LIMIT n OFFSET off
     if (acceptKeyword("LIMIT")) {
+      int64_t a = expectInt();
+      if (acceptPunct(",")) {
+        int64_t b = expectInt();
+        if (a < 0 || b < 0) throwErr(1064, "42000", "LIMIT must not be negative");
+        st.select.offset = a;
+        st.select.limit = b;
+      } else {
+        if (a < 0) throwErr(1064, "42000", "LIMIT must not be negative");
+        st.select.limit = a;
+      }
+      if (acceptKeyword("OFFSET")) {
+        int64_t off = expectInt();
+        if (off < 0) throwErr(1064, "42000", "OFFSET must not be negative");
+        st.select.offset = off;
+      }
       st.select.hasLimit = true;
-      int64_t n = expectInt();
-      if (n < 0) throwErr(1064, "42000", "LIMIT must not be negative");
-      st.select.limit = n;
     }
-    // trailing OFFSET is not part of the required subset; reject explicitly.
-    if (isKeyword(cur(), "OFFSET")) syntax("OFFSET is not supported");
     return st;
   }
 

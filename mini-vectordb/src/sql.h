@@ -71,6 +71,7 @@ struct SelectStmt {
   ExprPtr orderExpr;
   int orderIdx = -1;      // index into items
   bool orderDesc = false;
+  int64_t offset = 0;
   bool hasLimit = false;
   int64_t limit = -1;
 };

@@ -609,13 +609,14 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
   };
 
   int64_t lim = st.select.hasLimit ? st.select.limit : -1;
+  int64_t off = st.select.hasLimit ? st.select.offset : 0;
   if (lim == 0) return;  // LIMIT 0 never returns rows
 
   // --- vector top-k fast path
   if (orderDist && lim > 0 && dim > 0) {
     // Never ask the scan kernel for more slots than there are rows: LIMIT may
     // legally be far larger than the table.
-    int64_t k = std::min<int64_t>(lim, (int64_t)t->nextRowid);
+    int64_t k = std::min<int64_t>(lim + off, (int64_t)t->nextRowid);
     if (k <= 0) return;
     std::vector<Cand> results;
     bool usedIndex = false;
@@ -657,7 +658,11 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
       return a.pk < b.pk;
     });
     if ((int64_t)results.size() > k) results.resize((size_t)k);
-    for (auto& c : results) {
+    size_t skip = (size_t)std::min<int64_t>(off, (int64_t)results.size());
+    int64_t emitted = 0;
+    for (size_t ri = skip; ri < results.size(); ri++) {
+      if (emitted++ >= lim) break;
+      const Cand& c = results[ri];
       std::vector<Value> row;
       decodeRowAt(*t, c.rowid, row);
       std::vector<std::string> out;
@@ -714,7 +719,7 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
       }
     }
     rows.push_back(std::move(sr));
-    if (!needKey && lim > 0 && (int64_t)rows.size() >= lim) break;
+    if (!needKey && lim > 0 && (int64_t)rows.size() >= lim + off) break;
   }
   if (needKey) {
     std::sort(rows.begin(), rows.end(), [&](const SortRow& a, const SortRow& b) {
@@ -728,6 +733,10 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
       if (c != 0) return c < 0;
       return a.pk < b.pk;
     });
+    if (off > 0) {
+      if ((int64_t)rows.size() > off) rows.erase(rows.begin(), rows.begin() + (size_t)off);
+      else rows.clear();
+    }
     if (lim >= 0 && (int64_t)rows.size() > lim) rows.resize((size_t)lim);
   }
   for (auto& sr : rows) {

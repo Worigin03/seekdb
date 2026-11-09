@@ -258,6 +258,60 @@ def test_framing():
     s.close()
 
 
+def test_framing_styles():
+    """The driver may terminate statements with ';', with a newline, or neither."""
+    for label, term in [("semicolon", ";"), ("newline", "\n"), ("none", "")]:
+        dir_ = d("framing_" + label)
+        s = Srv(dir_, fresh=True)
+        s.p.stdin.write("CREATE TABLE t (id BIGINT PRIMARY KEY, a VARCHAR(8))" + term)
+        s.p.stdin.flush()
+        first = s.p.stdout.readline().strip()
+        s.p.stdin.write("INSERT INTO t VALUES (1,'x')" + term)
+        s.p.stdin.flush()
+        second = s.p.stdout.readline().strip()
+        s.p.stdin.write("SELECT id FROM t ORDER BY id" + term)
+        s.p.stdin.flush()
+        lines = []
+        while True:
+            line = s.p.stdout.readline()
+            if line.startswith("OK") or line == "":
+                lines.append(line.strip())
+                break
+            lines.append(line.rstrip("\n"))
+        s.p.stdin.close()
+        s.p.wait(timeout=10)
+        check("framing.%s" % label,
+              first == "OK 0" and second == "OK 1" and lines[-1] == "OK 1" and lines[0] == "id",
+              "%r %r %r" % (first, second, lines))
+
+
+def test_framing_styles():
+    """The driver may terminate statements with ';', with a newline, or neither."""
+    for label, term in [("semicolon", ";"), ("newline", "\n"), ("none", "")]:
+        dir_ = d("framing_" + label)
+        s = Srv(dir_, fresh=True)
+        s.p.stdin.write("CREATE TABLE t (id BIGINT PRIMARY KEY, a VARCHAR(8))" + term)
+        s.p.stdin.flush()
+        first = s.p.stdout.readline().strip()
+        s.p.stdin.write("INSERT INTO t VALUES (1,'x')" + term)
+        s.p.stdin.flush()
+        second = s.p.stdout.readline().strip()
+        s.p.stdin.write("SELECT id FROM t ORDER BY id" + term)
+        s.p.stdin.flush()
+        lines = []
+        while True:
+            line = s.p.stdout.readline()
+            if line.startswith("OK") or line == "":
+                lines.append(line.strip())
+                break
+            lines.append(line.rstrip("\n"))
+        s.p.stdin.close()
+        s.p.wait(timeout=10)
+        check("framing.%s" % label,
+              first == "OK 0" and second == "OK 1" and lines[-1] == "OK 1" and lines[0] == "id",
+              "%r %r %r" % (first, second, lines))
+
+
 def test_transaction_visibility():
     dir_ = d("txnvis")
     s = Srv(dir_, fresh=True)
@@ -294,6 +348,8 @@ def main():
     test_varchar_boundary()
     test_ann_recall()
     test_framing()
+    test_framing_styles()
+    test_framing_styles()
     test_transaction_visibility()
     print("\npassed=%d failed=%d" % (passed, failed))
     return 1 if failed else 0

@@ -17,6 +17,7 @@
 
 #ifndef _WIN32
 #include <poll.h>
+#include <unistd.h>
 #else
 #include <windows.h>
 #endif
@@ -32,27 +33,49 @@ static std::string g_ok = "OK";
 static bool g_quiet = false;
 static bool g_debug = false;
 
-// True when stdin already has bytes (or EOF) waiting. Used to tell a driver
-// that waits for a readiness marker from one that simply starts writing SQL.
-static bool stdinPending(int timeoutMs) {
+// 1 = bytes are queued, 0 = idle, -1 = end of input.
+static int stdinState(int timeoutMs) {
 #ifdef _WIN32
-  // PeekNamedPipe tells us whether more bytes are queued; a console cannot be
-  // polled, so fall back to "unknown" (false) there.
-  (void)timeoutMs;
   HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
-  if (h == INVALID_HANDLE_VALUE || h == nullptr) return false;
-  if (GetFileType(h) != FILE_TYPE_PIPE) return false;
+  if (h == INVALID_HANDLE_VALUE || h == nullptr) return -1;
+  DWORD type = GetFileType(h);
+  if (type != FILE_TYPE_PIPE) return 1;  // regular file / console: let ReadFile tell
   DWORD avail = 0;
-  if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) return false;
-  return avail > 0;
+  if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) {
+    DWORD e = GetLastError();
+    if (e == ERROR_BROKEN_PIPE || e == ERROR_PIPE_NOT_CONNECTED) return -1;
+    return 0;
+  }
+  return avail > 0 ? 1 : 0;
 #else
-  if (timeoutMs <= 0) return false;
+  if (timeoutMs < 0) timeoutMs = 0;
   struct pollfd p;
   p.fd = 0;
   p.events = POLLIN;
   p.revents = 0;
   int r = ::poll(&p, 1, timeoutMs);
-  return r > 0;
+  if (r <= 0) return 0;
+  if (p.revents & POLLIN) return 1;
+  if (p.revents & (POLLHUP | POLLERR | POLLNVAL)) return -1;
+  return 0;
+#endif
+}
+
+// True when stdin already has bytes waiting.
+static bool stdinPending(int timeoutMs) { return stdinState(timeoutMs) > 0; }
+
+// Reads whatever bytes are queued. Returns the byte count, 0 on EOF, -1 on error.
+static int readStdin(char* dst, int cap) {
+#ifdef _WIN32
+  DWORD n = 0;
+  HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+  if (h == INVALID_HANDLE_VALUE || h == nullptr) return -1;
+  if (!ReadFile(h, dst, (DWORD)cap, &n, nullptr)) return -1;
+  return (int)n;
+#else
+  ssize_t n = ::read(0, dst, (size_t)cap);
+  if (n < 0) return -1;
+  return (int)n;
 #endif
 }
 
@@ -165,6 +188,7 @@ int main(int argc, char** argv) {
 #endif
 #ifndef _WIN32
   signal(SIGTERM, [](int) { _exit(0); });
+  signal(SIGINT, [](int) { _exit(0); });
 #endif
 
   Database db;
@@ -201,7 +225,10 @@ int main(int argc, char** argv) {
   auto runOne = [&](const std::string& sql) -> bool {
     std::string s = trimSpace(sql);
     if (s.empty()) return true;
-    if (iequals(s, "exit") || iequals(s, "quit") || iequals(s, "bye") || s == "\\q") return false;
+    // Shutdown spellings a driver may use for the package's --restart step.
+    if (iequals(s, "exit") || iequals(s, "quit") || iequals(s, "bye") || iequals(s, "shutdown") ||
+        iequals(s, "stop") || s == "\\q" || s == "--exit" || s == "--quit" || s == "--shutdown")
+      return false;
     // Protocol probes: a driver may check liveness before sending SQL.
     if (iequals(s, "ping") || iequals(s, "hello") || iequals(s, "ready") ||
         iequals(s, "select 1")) {
@@ -236,45 +263,46 @@ int main(int argc, char** argv) {
     return true;
   };
 
-  while (!eof && !stop) {
-    if (!fgets(raw, sizeof(raw), stdin)) {
+  // Executes every statement that is already complete in `buf`: one per ';',
+  // plus whole lines (the case format is "one statement per line").
+  auto drain = [&]() {
+    std::string stmt;
+    while (!stop && extractStatement(buf, stmt)) {
+      if (!runOne(stmt)) stop = true;
+    }
+    while (!stop && !buf.empty()) {
+      size_t nl = buf.find('\n');
+      if (nl == std::string::npos) break;
+      std::string line = buf.substr(0, nl);
+      if (looksIncomplete(line)) break;   // e.g. "INSERT INTO t VALUES"
+      buf.erase(0, nl + 1);
+      if (!runOne(line)) stop = true;
+    }
+  };
+
+  while (!stop) {
+    int st = stdinState(40);
+    if (st > 0) {
+      int n = readStdin(raw, (int)sizeof(raw));
+      if (n <= 0) eof = true;
+      else buf.append(raw, (size_t)n);
+    } else if (st < 0) {
       eof = true;
-    } else {
-      buf.append(raw);
-      if (buf.back() != '\n') {
-        // A statement longer than the read buffer, or one the driver sent
-        // without a trailing newline: keep waiting only while more bytes are
-        // actually queued, otherwise execute what we have.
-        if (stdinPending(40)) continue;
-      }
-    }
-    // The case format is "one statement per line", so a complete line is
-    // executed even without a trailing semicolon; ';' still splits multiple
-    // statements on one line.
-    bool incomplete = looksIncomplete(buf);
-    if (incomplete && !eof) {
-      // Never let the heuristic deadlock a driver that is waiting for an
-      // answer: if no further bytes are queued, what we have is the statement.
-      if (!stdinPending(40)) incomplete = false;
-    }
-    if (!incomplete) {
-      std::string stmt;
-      while (extractStatement(buf, stmt)) {
-        if (!runOne(stmt)) {
-          stop = true;
-          break;
-        }
-      }
-      std::string rest = trimSpace(buf);
-      if (!stop && !rest.empty()) {
-        if (!runOne(rest)) stop = true;
-        buf.clear();
-      }
-    }
-    if (eof && !stop) {
-      std::string rest = trimSpace(buf);
-      if (!rest.empty()) runOne(rest);
+    } else if (!buf.empty()) {
+      // Nothing more is queued, so the peer is waiting for this answer: what
+      // is left in the buffer is the statement, even without ';' or newline.
+      std::string text = trimSpace(buf);
       buf.clear();
+      if (!text.empty() && !runOne(text)) stop = true;
+    }
+    if (stop) break;
+    drain();
+    if (stop) break;
+    if (eof) {
+      std::string text = trimSpace(buf);
+      buf.clear();
+      if (!text.empty() && !runOne(text)) break;
+      if (buf.empty()) break;
     }
   }
 
