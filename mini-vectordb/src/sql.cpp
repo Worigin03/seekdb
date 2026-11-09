@@ -231,6 +231,9 @@ class Parser {
   Parser(const std::string& sql, std::vector<Token> toks)
       : sql_(sql), t_(std::move(toks)) {}
 
+  bool atEnd() const { return cur().kind == TK_END; }
+  const std::string& rest() const { return cur().text; }
+
   Stmt parse() {
     Stmt st;
     if (cur().kind == TK_END) return st;
@@ -249,16 +252,21 @@ class Parser {
     if (isKeyword(cur(), "START")) {
       next();
       if (!acceptKeyword("TRANSACTION")) syntax("expected TRANSACTION");
+      if (acceptKeyword("READ")) {
+        if (!acceptKeyword("WRITE")) acceptKeyword("ONLY");
+      }
       st.kind = Stmt::BEGIN_TX;
       return st;
     }
     if (isKeyword(cur(), "COMMIT")) {
       next();
+      acceptKeyword("WORK");
       st.kind = Stmt::COMMIT_TX;
       return st;
     }
     if (isKeyword(cur(), "ROLLBACK")) {
       next();
+      acceptKeyword("WORK");
       st.kind = Stmt::ROLLBACK_TX;
       return st;
     }
@@ -620,10 +628,15 @@ class Parser {
         st.createTable.cols.push_back(col);
       }
       expectPunct(")");
-      if (isKeyword(cur(), "ENGINE")) {
+      // Table options are accepted and ignored (ENGINE / CHARSET / COLLATE ...).
+      while (cur().kind == TK_IDENT) {
+        std::string opt = toLowerAscii(cur().text);
+        if (opt != "engine" && opt != "default" && opt != "charset" && opt != "collate" &&
+            opt != "comment" && opt != "auto_increment" && opt != "row_format")
+          break;
         next();
         acceptPunct("=");
-        expectIdent();
+        if (cur().kind == TK_IDENT || cur().kind == TK_STR || cur().kind == TK_NUM) next();
       }
       return st;
     }
@@ -835,7 +848,12 @@ Stmt parseStatement(const std::string& sql) {
   Lexer lx(sql);
   if (!lx.run(toks, err)) throwErr(1064, "42000", err);
   Parser p(sql, std::move(toks));
-  return p.parse();
+  Stmt st = p.parse();
+  // Anything left over means the statement is not fully understood: report it
+  // instead of silently executing a prefix (the statement forbids that).
+  if (!p.atEnd())
+    throwErr(1064, "42000", "syntax error near '" + p.rest() + "'");
+  return st;
 }
 
 // --------------------------------------------------------------- splitter ---

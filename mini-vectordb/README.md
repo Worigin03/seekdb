@@ -45,20 +45,25 @@ make -j"$(nproc)" CXXFLAGS="-O3 -std=c++17 -funroll-loops"
 
 ## 2. 交互协议
 
-启动时先完成恢复，然后输出就绪标记；此后每收到一条以 `;` 结尾的 SQL 就执行一次：
+启动时先完成恢复，然后输出就绪标记；此后每收到一条 SQL 就执行一次，按题包约定
+「每个非空行一条完整 SQL」：
 
 ```
 READY
 <结果集（若有）：第一行为列名，其后每行一条记录，字段间用 \t 分隔>
-OK
+OK <n>
 <若失败则只输出一行：ERROR <错误码> (<SQLSTATE>): <消息>>
 ```
 
-* 就绪标记是自适应的：启动后最多等 `MVDB_READY_DELAY_MS`（默认 120 ms）看 stdin 是否
+* 状态行 `OK <n>`：`n` 是受影响记录数（INSERT/UPDATE/DELETE），查询时是返回的行数，
+  其余语句为 0。题包的 `affected_rows` 断言直接对应这个数字。
+* 语句边界：**以换行为界**（题包 `mysqltest/cases/*.test` 就是一行一条），行尾的 `;`
+  可有可无；同一行里用 `;` 分隔多条语句也可以；括号、引号或结尾停在 `VALUES` / `WHERE`
+  这类词上时视为未写完，会继续等下一行，所以跨行书写的语句也不会被执行半截。
+  支持 `--`、`#`、`/* */` 注释，支持字符串内的分号、`''` 与反斜杠转义、反引号标识符。
+* 就绪标记是自适应的：启动后最多等 `MVDB_READY_DELAY_MS`（默认 400 ms）看 stdin 是否
   已经有数据。驱动若在等 `READY`，这段时间内不会有输入，程序照常打印 `READY`；驱动若
   直接把整批 SQL 灌进来，程序就不再打印标记，避免多出一行干扰逐行比对。
-* 语句边界：以 `;` 结束；也接受空行结束一条语句（mysql 客户端习惯）。支持 `--`、`#`、
-  `/* */` 注释，支持字符串内的分号、`''` 与反斜杠转义、反引号标识符。
 * 结果集：列为 `\t` 分隔，行以 `\n` 结束；`BIGINT` 输出十进制，`VARCHAR` 原样输出，
   `VECTOR` 输出为 `[1,2,3]`，`L2_DISTANCE` 输出最短可往返的十进制表示（`3.7416573867739413`
   这种，不做定点截断，便于按浮点误差比较）。
@@ -80,18 +85,19 @@ SELECT id FROM items ORDER BY id;
 
 ```
 READY
-OK
-OK
+OK 0
+OK 2
 id	d
 1	1
-OK
-OK
-OK
-OK
+OK 1
+OK 0
+OK 0
+OK 0
+OK 0
 id
 1
 2
-OK
+OK 2
 ```
 
 重启（复用同一 `/data`）后数据仍在：
@@ -281,8 +287,11 @@ VECTOR 为 dim×4 字节原始 float32。主键单独存在记录头里，便于
 | `tests/test_extra.py` | 强制 mmap 模式、COMPACT、WAL 尾部损坏、DDL、跨表事务 | 23 项断言全部通过 |
 | `tests/test_edge.py` | 主键极值、Unicode 长度与排序、向量校验、语句原子性、DESC TopK、索引维护、5000 行崩溃恢复 | 42 项断言全部通过 |
 | `tests/fuzz.py` | 随机 600 步增删改查与 Python 参考模型差分对比 | 169 项断言全部通过 |
+| `tests/test_spec.py` | 按题面 2.1–2.3 逐条对照（表结构、DML、比较、排序、向量、事务、恢复、输入校验、不支持语句必须报错） | 35 项全部通过 |
+| `tests/run_public_cases.py` | 直接跑官方题包 `mysqltest/cases/*.test` 并核对 `.result` 的 JSON 断言 | 5/5 用例通过 |
 | `tests/bench.py` | 10k×128 维写入 + 1000 次 TopK | 见下 |
 | `tests/bench_latency.py` | 同上，并从 stderr 解析服务端单语句耗时 | 见下 |
+| `tests/stress.py` | 150k×128 维（73 MiB 向量）在 256 MiB 容器内写入、查询、重启 | PASS |
 
 ### 7.1 Linux x86_64 容器（正式运行环境）
 

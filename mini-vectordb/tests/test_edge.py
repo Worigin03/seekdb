@@ -49,7 +49,7 @@ class Session:
             if line == "":
                 raise RuntimeError("server closed: " + self.p.stderr.read())
             line = line.rstrip("\n")
-            if line == "OK":
+            if line == "OK" or line.startswith("OK "):
                 return headers, rows, None
             if line.startswith("ERROR "):
                 return headers, rows, line

@@ -167,6 +167,8 @@ class Database {
  public:
   struct ResultSet {
     bool hasResult = false;
+    // Rows touched by a data-modifying statement (0 for DDL and queries).
+    int64_t affected = 0;
     std::vector<std::string> headers;
     std::vector<std::vector<std::string>> rows;
   };

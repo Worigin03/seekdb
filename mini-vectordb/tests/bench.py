@@ -38,7 +38,7 @@ class Session:
             if line == "":
                 raise RuntimeError("closed: " + self.p.stderr.read())
             line = line.rstrip("\n")
-            if line == "OK":
+            if line == "OK" or line.startswith("OK "):
                 return rows
             if line.startswith("ERROR "):
                 raise RuntimeError(line)

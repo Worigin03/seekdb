@@ -7,6 +7,7 @@
 //   shutdown:           EOF / exit / quit / \q
 // All diagnostics go to stderr.
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -44,6 +45,64 @@ static bool stdinPending(int timeoutMs) {
   int r = ::poll(&p, 1, timeoutMs);
   return r > 0;
 #endif
+}
+
+// Heuristic: does the accumulated text still need more input? True when a
+// quote/bracket is open or the line ends on something that cannot end a
+// statement (VALUES, WHERE, a dangling comma ...). The official case format is
+// "one statement per line", so this only guards against split statements.
+static bool looksIncomplete(const std::string& s) {
+  int par = 0, brk = 0;
+  bool inS = false, inD = false, inB = false;
+  for (size_t i = 0; i < s.size(); i++) {
+    char c = s[i];
+    if (inS) {
+      if (c == '\\' && i + 1 < s.size()) { i++; continue; }
+      if (c == '\'') inS = false;
+      continue;
+    }
+    if (inD) {
+      if (c == '\\' && i + 1 < s.size()) { i++; continue; }
+      if (c == '"') inD = false;
+      continue;
+    }
+    if (inB) {
+      if (c == '`') inB = false;
+      continue;
+    }
+    if (c == '\'') { inS = true; continue; }
+    if (c == '"') { inD = true; continue; }
+    if (c == '`') { inB = true; continue; }
+    if (c == '-' && i + 1 < s.size() && s[i + 1] == '-') {
+      while (i < s.size() && s[i] != '\n') i++;
+      continue;
+    }
+    if (c == '(') par++;
+    else if (c == ')') par--;
+    else if (c == '[') brk++;
+    else if (c == ']') brk--;
+  }
+  if (inS || inD || inB || par > 0 || brk > 0) return true;
+  std::string t = trimSpace(s);
+  if (t.empty()) return false;
+  char last = t.back();
+  if (last == ',' || last == '=' || last == '(' || last == '+' || last == '-' || last == '*' ||
+      last == '/' || last == '<' || last == '>')
+    return true;
+  std::string w;
+  for (size_t i = t.size(); i > 0; i--) {
+    char c = t[i - 1];
+    if (!isalpha((unsigned char)c)) break;
+    w.insert(w.begin(), c);
+  }
+  w = toLowerAscii(w);
+  static const char* kOpen[] = {"values", "value", "where", "and", "or", "not", "set", "into",
+                                "from", "order", "by", "limit", "select", "table", "begin",
+                                "commit", "rollback", "as", "on", "using", "join", "primary",
+                                "key", "vector", "varchar", "bigint"};
+  for (const char* k : kOpen)
+    if (w == k) return true;
+  return false;
 }
 
 static void printResult(const Database::ResultSet& rs) {
@@ -111,7 +170,7 @@ int main(int argc, char** argv) {
   // few hundred milliseconds lets us serve both: when input is already pending
   // we stay silent and never inject an unexpected line into the result stream.
   bool announce = !g_quiet;
-  int readyDelayMs = 120;
+  int readyDelayMs = 400;
   if (const char* e = getenv("MVDB_READY_DELAY_MS")) readyDelayMs = atoi(e);
   if (announce && stdinPending(readyDelayMs)) announce = false;
   if (announce) {
@@ -123,112 +182,78 @@ int main(int argc, char** argv) {
   }
 
   std::string buf;
-  std::string line;
   char raw[65536];
   bool eof = false;
-  while (!eof) {
+  bool stop = false;
+
+  // Executes one statement and writes its response. Returns false when the
+  // statement asks the process to exit.
+  auto runOne = [&](const std::string& sql) -> bool {
+    std::string s = trimSpace(sql);
+    if (s.empty()) return true;
+    if (iequals(s, "exit") || iequals(s, "quit") || iequals(s, "bye") || s == "\\q") return false;
+    // Protocol probes: a driver may check liveness before sending SQL.
+    if (iequals(s, "ping") || iequals(s, "hello") || iequals(s, "ready") ||
+        iequals(s, "select 1")) {
+      if (!g_quiet) fprintf(stdout, "%s 0\n", g_ok.c_str());
+      fflush(stdout);
+      return true;
+    }
+    Database::ResultSet rs;
+    int64_t t0 = g_debug ? nowMicros() : 0;
+    try {
+      db.execute(s, rs);
+    } catch (const SqlError& e) {
+      printError(e);
+      fflush(stdout);
+      if (g_debug) fprintf(stderr, "[%lld us] %s\n", (long long)(nowMicros() - t0), s.c_str());
+      return true;
+    } catch (const std::exception& e) {
+      SqlError se(1105, "HY000", e.what());
+      printError(se);
+      fflush(stdout);
+      return true;
+    }
+    if (rs.hasResult) printResult(rs);
+    if (!g_quiet) {
+      // Status line carries the row count: affected rows for DML, rows in the
+      // result set for queries, 0 otherwise.
+      long long n = rs.hasResult ? (long long)rs.rows.size() : (long long)rs.affected;
+      fprintf(stdout, "%s %lld\n", g_ok.c_str(), n);
+    }
+    fflush(stdout);
+    if (g_debug) fprintf(stderr, "[%lld us] %s\n", (long long)(nowMicros() - t0), s.c_str());
+    return true;
+  };
+
+  while (!eof && !stop) {
     if (!fgets(raw, sizeof(raw), stdin)) {
       eof = true;
-      if (buf.empty()) break;
     } else {
       buf.append(raw);
+      if (buf.back() != '\n') continue;  // partial line, wait for the rest
     }
-    // A blank line terminates the pending statement (mysql client behaviour),
-    // which also covers drivers that separate statements with an empty line.
-    {
-      std::string t = trimSpace(buf);
-      if (!t.empty() && t.back() != ';' && !eof) {
-        std::string last(raw);
-        std::string lt = trimSpace(last);
-        if (lt.empty()) {
-          Database::ResultSet rs;
-          try {
-            db.execute(t, rs);
-            if (rs.hasResult) printResult(rs);
-            if (!g_quiet) {
-              fputs(g_ok.c_str(), stdout);
-              fputc('\n', stdout);
-            }
-          } catch (const SqlError& e) {
-            printError(e);
-          } catch (const std::exception& e) {
-            SqlError se(1105, "HY000", e.what());
-            printError(se);
-          }
-          fflush(stdout);
-          buf.clear();
-          continue;
+    // The case format is "one statement per line", so a complete line is
+    // executed even without a trailing semicolon; ';' still splits multiple
+    // statements on one line.
+    if (!looksIncomplete(buf)) {
+      std::string stmt;
+      while (extractStatement(buf, stmt)) {
+        if (!runOne(stmt)) {
+          stop = true;
+          break;
         }
       }
-    }
-    // bare interactive commands without a trailing semicolon
-    std::string t = trimSpace(buf);
-    if (!eof && (iequals(t, "exit") || iequals(t, "quit") || iequals(t, "bye") || t == "\\q")) {
-      buf.clear();
-      break;
-    }
-    std::string stmt;
-    while (extractStatement(buf, stmt)) {
-      std::string s = trimSpace(stmt);
-      if (s.empty()) continue;
-      // Protocol probes: a driver may check liveness before sending SQL.
-      if (iequals(s, "ping") || iequals(s, "hello") || iequals(s, "ready") ||
-          iequals(s, "select 1")) {
-        if (!g_quiet) {
-          fputs(g_ok.c_str(), stdout);
-          fputc('\n', stdout);
-        }
-        fflush(stdout);
-        continue;
-      }
-      Database::ResultSet rs;
-      int64_t t0 = g_debug ? nowMicros() : 0;
-      try {
-        db.execute(s, rs);
-      } catch (const SqlError& e) {
-        printError(e);
-        fflush(stdout);
-        if (g_debug) fprintf(stderr, "[%lld us] %s\n", (long long)(nowMicros() - t0), s.c_str());
-        continue;
-      } catch (const std::exception& e) {
-        SqlError se(1105, "HY000", e.what());
-        printError(se);
-        fflush(stdout);
-        continue;
-      }
-      if (rs.hasResult) printResult(rs);
-      if (!g_quiet) {
-        fputs(g_ok.c_str(), stdout);
-        fputc('\n', stdout);
-      }
-      fflush(stdout);
-      if (g_debug)
-        fprintf(stderr, "[%lld us] %s\n", (long long)(nowMicros() - t0), s.c_str());
-      if (iequals(s, "exit") || iequals(s, "quit") || s == "\\q") {
-        eof = true;
+      std::string rest = trimSpace(buf);
+      if (!stop && !rest.empty()) {
+        if (!runOne(rest)) stop = true;
         buf.clear();
-        break;
       }
     }
-    if (eof) {
-      std::string rem = trimSpace(buf);
-      if (!rem.empty()) {
-        Database::ResultSet rs;
-        try {
-          db.execute(rem, rs);
-          if (rs.hasResult) printResult(rs);
-          if (!g_quiet) {
-            fputs(g_ok.c_str(), stdout);
-            fputc('\n', stdout);
-          }
-        } catch (const SqlError& e) {
-          printError(e);
-        } catch (const std::exception& e) {
-          SqlError se(1105, "HY000", e.what());
-          printError(se);
-        }
-        fflush(stdout);
-      }
+    if (eof && !stop) {
+      std::string rest = trimSpace(buf);
+      if (!rest.empty()) runOne(rest);
+      buf.clear();
     }
   }
 

@@ -10,14 +10,17 @@ FROM ubuntu:24.04 AS build
 
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      g++ make ca-certificates \
+      g++ ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 COPY mini-vectordb/ /build/mini-vectordb/
+# Compile directly instead of going through make: the repository .gitignore
+# ignores files named Makefile, so a Makefile cannot be relied upon being
+# present in a checkout of this branch.
 RUN cd /build/mini-vectordb \
- && make -j"$(nproc)" \
-      CXXFLAGS="-O3 -std=c++17 -funroll-loops -static-libstdc++ -static-libgcc" \
+ && g++ -O3 -std=c++17 -funroll-loops -static-libstdc++ -static-libgcc \
+      -o minivectordb src/*.cpp \
  && strip minivectordb
 
 FROM ubuntu:24.04
@@ -25,7 +28,8 @@ FROM ubuntu:24.04
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libstdc++6 \
  && rm -rf /var/lib/apt/lists/* \
- && mkdir -p /data
+ && mkdir -p /data \
+ && chmod 777 /data
 
 COPY --from=build /build/mini-vectordb/minivectordb /usr/local/bin/minivectordb
 

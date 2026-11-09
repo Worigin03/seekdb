@@ -48,7 +48,7 @@ def main():
             if line == "":
                 raise RuntimeError("closed")
             line = line.rstrip("\n")
-            if line == "OK":
+            if line == "OK" or line.startswith("OK "):
                 return headers, rows
             if line.startswith("ERROR"):
                 raise RuntimeError(line)

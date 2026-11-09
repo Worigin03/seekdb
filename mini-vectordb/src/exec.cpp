@@ -297,7 +297,6 @@ static void coerceValue(const Column& c, const Expr& e, Value& out, int rowNo) {
 }
 
 void Database::execInsert(const Stmt& st, ResultSet& rs) {
-  (void)rs;
   Table* t = getTableOrThrow(st.insert.table);
   const Schema& sc = t->schema;
   std::vector<int> colMap;
@@ -367,6 +366,7 @@ void Database::execInsert(const Stmt& st, ResultSet& rs) {
   }
   std::vector<uint64_t> offs;
   appendRecords(bodies, offs);
+  rs.affected = (int64_t)rowids.size();
   for (size_t i = 0; i < rowids.size(); i++) {
     // payload sits at the tail of the record body
     uint64_t payloadOff = offs[i] + (bodies[i].size() - payloads[i].size());
@@ -376,7 +376,6 @@ void Database::execInsert(const Stmt& st, ResultSet& rs) {
 }
 
 void Database::execDelete(const Stmt& st, ResultSet& rs) {
-  (void)rs;
   Table* t = getTableOrThrow(st.del.table);
   std::unique_ptr<CompiledCond> where;
   if (st.del.where) where = compileCond(*t, *st.del.where);
@@ -400,11 +399,11 @@ void Database::execDelete(const Stmt& st, ResultSet& rs) {
   }
   std::vector<uint64_t> offs;
   appendRecords(bodies, offs);
+  rs.affected = (int64_t)hits.size();
   for (uint64_t r : hits) applyPendingDelete(*t, r, t->pkOf[r], true);
 }
 
 void Database::execUpdate(const Stmt& st, ResultSet& rs) {
-  (void)rs;
   Table* t = getTableOrThrow(st.update.table);
   const Schema& sc = t->schema;
   std::vector<int> setCols;
@@ -459,6 +458,7 @@ void Database::execUpdate(const Stmt& st, ResultSet& rs) {
   }
   std::vector<uint64_t> offs;
   appendRecords(bodies, offs);
+  rs.affected = (int64_t)oldIds.size();
   for (size_t i = 0; i < oldIds.size(); i++) {
     uint64_t payloadOff = offs[i] + (bodies[i].size() - payloads[i].size());
     applyUpdate(t->id, oldIds[i], newIds[i], pks[i], payloads[i].data(),
@@ -594,6 +594,7 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
   }
 
   rs.hasResult = true;
+  rs.affected = 0;
   for (auto& it : items) rs.headers.push_back(it.header);
 
   std::unique_ptr<CompiledCond> where;
