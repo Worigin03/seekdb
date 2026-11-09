@@ -20,6 +20,7 @@
 #include <map>
 #include <set>
 #include <mutex>
+#include <condition_variable>
 #include <vector>
 #include <memory>
 #include <new>
@@ -230,6 +231,71 @@ static void *ob_cuvs_job(void *arg) {
   return nullptr;
 }
 
+static bool ob_cuvs_start_search_thread(pthread_t &thread, void *(*run)(void *), void *arg)
+{
+  pthread_attr_t attr;
+  if (pthread_attr_init(&attr) != 0) { return false; }
+  int rc = pthread_attr_setstacksize(&attr, 32UL * 1024 * 1024);
+  if (rc == 0) { rc = pthread_create(&thread, &attr, run, arg); }
+  pthread_attr_destroy(&attr);
+  return rc == 0;
+}
+
+// Reuse the large stack and HIP thread-local state for single-query searches.
+// The registry mutex serializes submissions and keeps the index alive until completion.
+class CuvsSearchWorker {
+public:
+  CuvsSearchWorker()
+  {
+    started_ = ob_cuvs_start_search_thread(thread_, work, this);
+  }
+
+  ~CuvsSearchWorker()
+  {
+    if (started_) {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopping_ = true;
+        ready_.notify_one();
+      }
+      pthread_join(thread_, nullptr);
+    }
+  }
+
+  bool search(ObCuvsJob &job)
+  {
+    if (!started_) { return false; }
+    std::unique_lock<std::mutex> lock(mutex_);
+    job_ = &job;
+    ready_.notify_one();
+    finished_.wait(lock, [this] { return job_ == nullptr; });
+    return true;
+  }
+
+private:
+  static void *work(void *arg)
+  {
+    auto &worker = *static_cast<CuvsSearchWorker *>(arg);
+    std::unique_lock<std::mutex> lock(worker.mutex_);
+    for (;;) {
+      worker.ready_.wait(lock, [&worker] { return worker.stopping_ || worker.job_ != nullptr; });
+      if (worker.stopping_) { break; }
+      ob_cuvs_job(worker.job_);
+      worker.job_ = nullptr;
+      worker.finished_.notify_one();
+    }
+    return nullptr;
+  }
+
+  std::mutex mutex_;
+  std::condition_variable ready_;
+  std::condition_variable finished_;
+  pthread_t thread_{};
+  ObCuvsJob *job_ = nullptr;
+  bool started_ = false;
+  bool stopping_ = false;
+};
+
 // [BATCH] Feed nq probe vectors to ONE cuVS call (nq>1). Same large-stack
 // pthread pattern as the single-query path (cuVS overflows the OB worker stack).
 struct ObCuvsBatchJob {
@@ -285,17 +351,23 @@ static bool ob_cuvs_try_search(void *key, vsag::Allocator *alloc,
   ObCuvsEntry *ent = it->second;
   // Lazily (re)build the GPU CAGRA index when there are enough points and either
   // nothing is built yet or the buffer grew materially (>=2x). Build+search run on
-  // a 32MB-stack pthread (cuVS overflows the OB worker stack otherwise).
+  // a one-shot 32MB-stack pthread (cuVS overflows the OB worker stack otherwise).
   const size_t n = ent->buf_ids_.size();
   const bool need_build =
       (n >= OB_CUVS_MIN_PTS && (ent->bridge_ == nullptr || n >= ent->built_n_ * 2));
+  if (!need_build && (ent->bridge_ == nullptr || ent->built_n_ != n)) { return false; }
   std::vector<unsigned> off(topk);
   std::vector<float> dst(topk);
   ObCuvsJob job{ent, query, topk, static_cast<int>(ent->dim_), n, need_build, &off, &dst, -1, false};
-  pthread_t tid; pthread_attr_t attr; pthread_attr_init(&attr);
-  pthread_attr_setstacksize(&attr, 32UL * 1024 * 1024);
-  if (pthread_create(&tid, &attr, ob_cuvs_job, &job) == 0) { pthread_join(tid, nullptr); }
-  pthread_attr_destroy(&attr);
+  bool submitted = false;
+  if (!need_build) {
+    static CuvsSearchWorker worker;
+    submitted = worker.search(job);
+  }
+  if (!submitted) {
+    pthread_t tid;
+    if (ob_cuvs_start_search_thread(tid, ob_cuvs_job, &job)) { pthread_join(tid, nullptr); }
+  }
   if (job.built_) { ob_vsag_trace("cuvs_build", key, static_cast<long>(ent->dim_), static_cast<long>(n)); }
   if (ent->bridge_ == nullptr || job.rc_ != 0) { return false; }
   // Post-filter: cuVS returned UNFILTERED top-k. Apply the query's row filter
