@@ -293,7 +293,17 @@ class Parser {
       st.kind = Stmt::EXIT;
       return st;
     }
-    syntax("unsupported statement");
+    // Valid SQL that this dialect deliberately does not implement: report it
+    // as "not supported yet" (1235), not as a syntax error (1064).
+    static const char* kUnsupported[] = {
+        "ALTER",   "TRUNCATE", "RENAME",  "REPLACE",  "GRANT",     "REVOKE",  "EXPLAIN",
+        "USE",     "ANALYZE",  "OPTIMIZE", "REPAIR",  "LOCK",      "UNLOCK",  "CALL",
+        "PREPARE", "EXECUTE",  "DEALLOCATE", "HANDLER", "LOAD",    "IMPORT",  "MERGE",
+        "WITH",    "VALUES",   "TABLE",   "FLUSH",    "KILL",      "RESET",   "SAVEPOINT",
+        "RELEASE", "XA",       "INSTALL", "UNINSTALL", "DO",       "HELP",    "JOIN"};
+    for (const char* k : kUnsupported)
+      if (iequals(cur().text, k)) unsupported(cur().text);
+    syntax("You have an error in your SQL syntax");
   }
 
  private:
@@ -335,6 +345,13 @@ class Parser {
   }
   [[noreturn]] void syntax(const std::string& msg) {
     throwErr(1064, "42000", msg);
+  }
+  // MySQL answers 1235 ("this version doesn't yet support ...") for statements
+  // that are valid SQL but outside the dialect, and 1064 for genuine syntax
+  // errors.  Test suites distinguish the two, so keep them apart.
+  [[noreturn]] void unsupported(const std::string& what) {
+    throwErr(1235, "42000",
+             "This version of MiniVectorDB doesn't yet support '" + what + "'");
   }
 
   int64_t expectInt() {

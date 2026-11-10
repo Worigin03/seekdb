@@ -135,6 +135,24 @@ def num(text):
         return None
 
 
+# The package asserts semantic error names, and the driver maps our numeric
+# codes onto them.  Keeping the same table here means a wrong code fails the
+# replay instead of silently passing as "some error happened".
+ERROR_NAMES = {1062: "duplicate_key", 1235: "unsupported_sql", 1366: "dimension_mismatch"}
+
+
+def error_name(line):
+    """Maps an ``ERROR <code> (<sqlstate>): ...`` line to its semantic name."""
+    parts = line.split()
+    code = None
+    if len(parts) >= 2 and parts[0] == "ERROR":
+        try:
+            code = int(parts[1])
+        except ValueError:
+            code = None
+    return ERROR_NAMES.get(code, "error_%s" % (code,))
+
+
 def same_value(expected, got):
     if isinstance(expected, bool):
         return False
@@ -152,6 +170,10 @@ def compare(expect, columns, rows, affected, error, tag):
     if "error" in expect:
         if error is None:
             fails.append("%s: expected error %r, got success" % (tag, expect["error"]))
+            return fails
+        got = error_name(error)
+        if got != expect["error"]:
+            fails.append("%s: error %r != %r" % (tag, got, expect["error"]))
         return fails
     if error is not None:
         return ["%s: unexpected %s" % (tag, error)]
