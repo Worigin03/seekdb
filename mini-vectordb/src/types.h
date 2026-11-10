@@ -72,7 +72,7 @@ bool parseVectorLiteral(const std::string& text, int expectDim, std::vector<floa
 void encodeRow(const Schema& sc, const std::vector<Value>& row, std::string& out);
 bool decodeRow(const Schema& sc, const char* p, size_t n, int64_t pk, std::vector<Value>& out);
 
-std::string formatValue(const Value& v, bool isDistance = false);
+std::string formatVector(const std::vector<float>& v);
 std::string formatDouble(double d);
 
 }  // namespace mvdb

@@ -1,4 +1,4 @@
-// MiniVectorDB - stdin/stdout front end.
+// MiniVectorDB - local SQL console and judge JSONL entry point.
 //
 // Protocol (see README):
 //   startup:            "READY"
@@ -14,12 +14,15 @@
 #include <string>
 #include <vector>
 #include <csignal>
+#include <type_traits>
 
 #ifndef _WIN32
 #include <poll.h>
 #include <unistd.h>
 #else
 #include <windows.h>
+#include <fcntl.h>
+#include <io.h>
 #endif
 
 #include "engine.h"
@@ -27,6 +30,8 @@
 #include "sql.h"
 
 using namespace mvdb;
+
+int runJsonl(Database& db);
 
 static std::string g_ready = "READY";
 static std::string g_ok = "OK";
@@ -90,7 +95,13 @@ static void printResult(const Database::ResultSet& rs) {
   for (auto& row : rs.rows) {
     for (size_t i = 0; i < row.size(); i++) {
       if (i) out.push_back('\t');
-      out += row[i];
+      std::visit([&](const auto& value) {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, std::string>) out += value;
+        else if constexpr (std::is_same_v<T, std::vector<float>>) out += formatVector(value);
+        else if constexpr (std::is_same_v<T, double>) out += formatDouble(value);
+        else out += std::to_string(value);
+      }, row[i]);
     }
     out.push_back('\n');
   }
@@ -105,6 +116,7 @@ static void printError(const SqlError& e) {
 
 int main(int argc, char** argv) {
   std::string dataDir = "/data";
+  bool jsonl = false;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     if (a == "--data-dir" && i + 1 < argc) {
@@ -113,8 +125,10 @@ int main(int argc, char** argv) {
       dataDir = a.substr(11);
     } else if (a == "--quiet") {
       g_quiet = true;
+    } else if (a == "--jsonl") {
+      jsonl = true;
     } else if (a == "--help") {
-      fprintf(stderr, "usage: minivectordb [--data-dir DIR] [--quiet]\n");
+      fprintf(stderr, "usage: minivectordb [--data-dir DIR] [--jsonl | --quiet]\n");
       return 0;
     }
   }
@@ -138,6 +152,13 @@ int main(int argc, char** argv) {
   } catch (const std::exception& e) {
     fprintf(stderr, "fatal: cannot open database: %s\n", e.what());
     return 1;
+  }
+
+  if (jsonl) {
+#ifdef _WIN32
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+    return runJsonl(db);
   }
 
   // Readiness handshake. The reference driver announces itself by waiting for a

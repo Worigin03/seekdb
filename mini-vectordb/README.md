@@ -3,8 +3,8 @@
 单机、单进程、单客户端的轻量向量数据库。支持 SQL 建表与增删改查、BIGINT 主键、VARCHAR、
 定长 VECTOR 列、L2 距离精确 TopK（含过滤）、持久化、显式事务与崩溃恢复。
 
-实现语言：C++17（无第三方依赖），构建产物为单个可执行文件 `minivectordb`。
-运行环境：Linux x86_64 容器，前台运行，stdin 收 SQL，stdout 返回结果，stderr 输出日志，
+实现语言：C++17，RapidJSON 仅用于通信序列化，构建产物为单个可执行文件 `minivectordb`。
+运行环境：Linux x86_64 容器，前台运行，经 stdin/stdout 交换 JSONL，stderr 输出日志，
 不监听任何网络端口。
 
 ---
@@ -12,23 +12,23 @@
 ## 1. 构建与运行
 
 ```bash
-# 构建（多阶段构建，产物在最终镜像的 /usr/local/bin/minivectordb）
-docker build -t minivectordb .
+# 在仓库根目录构建
+docker build --platform linux/amd64 -t minivectordb .
 
-# 前台运行；必须使用 -i 保持 stdin 打开，不要用 -d / -t
+# 前台运行；默认进入正式 JSONL 模式
 mkdir -p /tmp/mvdb-data
 docker run --rm -i -v /tmp/mvdb-data:/data minivectordb
 ```
 
-本地直接构建：
+本地直接构建（需安装 RapidJSON 头文件，如 Ubuntu 的 `rapidjson-dev`）：
 
 ```bash
 cd mini-vectordb
-make -j"$(nproc)" CXXFLAGS="-O3 -std=c++17 -funroll-loops"
+g++ -O3 -std=c++17 -funroll-loops -pthread -o minivectordb src/*.cpp
 ./minivectordb --data-dir=/tmp/mvdb-data
 ```
 
-程序参数：`--data-dir=DIR`（默认 `/data`）。环境变量：
+程序参数：`--data-dir=DIR`（默认 `/data`）、`--jsonl`（正式协议）。环境变量：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
@@ -47,7 +47,24 @@ make -j"$(nproc)" CXXFLAGS="-O3 -std=c++17 -funroll-loops"
 
 ---
 
-## 2. 交互协议
+## 2. 正式评测协议
+
+容器在恢复完成后主动输出 `{"type":"ready"}`。每行 JSON 请求包含 `id` 和 `op`。
+`execute` 还携带一条 SQL 和 `search_mode`（`exact` 或 `ann`），返回带原始 `id` 和布尔
+`ok` 的一行 JSON。查询返回 `columns` 和 `rows`，写入返回 `affected_rows`，SQL 失败
+返回 `error.code` 和 `error.message`。收到 `shutdown` 时先回滚未提交事务，再返回成功并退出。
+
+按[上游协议说明](https://github.com/oceanbase/seekdb/blob/2026-competition-round2/STDIO_PROTOCOL.md)
+获取 `protocol_check/`，在题包根目录运行：
+
+```bash
+python3 protocol_check/run.py --image minivectordb --handshake-only --output "protocol-results/handshake-$(date +%s)"
+python3 protocol_check/run.py --image minivectordb --output "protocol-results/public-$(date +%s)"
+```
+
+### 本地 SQL 控制台
+
+直接运行二进制且省略 `--jsonl` 时，使用以下纯文本控制台协议。旧的本地测试脚本通过此入口运行。
 
 启动时先完成恢复，然后输出就绪标记；此后每收到一条 SQL 就执行一次，按题包约定
 「每个非空行一条完整 SQL」：
@@ -66,14 +83,11 @@ OK <n>
   2. **换行**：每行一条（题包 `mysqltest/cases/*.test` 的格式），行尾 `;` 可有可无；
   3. **都没有**：读完之后 40 ms 内 stdin 没有新字节（说明对面在等结果），当前缓冲区
      就当作一条完整语句执行。
-  只有在“明显没写完”时才继续等下一行：引号/括号未闭合，或结尾停在 `VALUES`、`WHERE`、
-  `AND`、`ORDER BY` 这类**不可能结束语句**的词上。**任何合法语句都不会被吞掉**——
-  v1 曾把 `value`、`begin`、`bigint`、`key` 也当成“未写完”，导致 `ORDER BY value`、`BEGIN`、
-  `ALTER TABLE ... BIGINT` 被无限期挂起，这是 v1 准入失败的直接原因。
+  换行判断会尝试识别尚未闭合的引号、括号和以 `VALUES`、`WHERE` 等词结尾的输入。
 * 输入用 `poll`（Linux）/ `PeekNamedPipe`（Windows）驱动，不依赖 `fgets` 的换行，因此
   “语句不带换行”“管道关闭”都能正确结束，不会死等。
   支持 `--`、`#`、`/* */` 注释，支持字符串内的分号、`''` 与反斜杠转义、反引号标识符。
-* 就绪标记是自适应的：启动后最多等 `MVDB_READY_DELAY_MS`（默认 400 ms）看 stdin 是否
+* 就绪标记是自适应的：启动后最多等 `MVDB_READY_DELAY_MS`（默认 800 ms）看 stdin 是否
   已经有数据。驱动若在等 `READY`，这段时间内不会有输入，程序照常打印 `READY`；驱动若
   直接把整批 SQL 灌进来，程序就不再打印标记，避免多出一行干扰逐行比对。
 * 结果集：列为 `\t` 分隔，行以 `\n` 结束；`BIGINT` 输出十进制，`VARCHAR` 原样输出，
@@ -86,7 +100,7 @@ OK <n>
 * 模式切换：题包 `--mode ann` 由驱动转成 SQL 下发（本实现接受 `SET vector_mode = 'ann'`
   / `SET vector_mode = 'exact'`，也接受 `SET @@vector_mode`、`SET ann = 1`）。
 
-示例（`docker run -i` 或本地进程）：
+本地控制台示例：
 
 ```
 CREATE TABLE items (id BIGINT PRIMARY KEY, name VARCHAR(64), v VECTOR(3));
@@ -118,7 +132,7 @@ OK 2
 重启（复用同一 `/data`）后数据仍在：
 
 ```bash
-docker run --rm -i -v /tmp/mvdb-data:/data minivectordb <<'SQL'
+./minivectordb --data-dir=/tmp/mvdb-data <<'SQL'
 SELECT id, name FROM items ORDER BY id;
 SQL
 ```
@@ -309,7 +323,7 @@ VECTOR 为 dim×4 字节原始 float32。主键单独存在记录头里，便于
 
 ## 7. 本地验证记录
 
-`tests/` 下附带可重复执行的测试（Windows/Linux 均可，驱动方式与正式评测一致：stdin/stdout）：
+`tests/` 下附带可重复执行的控制台测试。正式 JSONL 协议请使用上游 `protocol_check` 验证。
 
 | 脚本 | 内容 | 结果 |
 | --- | --- | --- |
@@ -318,7 +332,7 @@ VECTOR 为 dim×4 字节原始 float32。主键单独存在记录头里，便于
 | `tests/test_edge.py` | 主键极值、Unicode 长度与排序、向量校验、语句原子性、DESC TopK、索引维护、5000 行崩溃恢复 | 42 项断言全部通过 |
 | `tests/fuzz.py` | 随机 600 步增删改查与 Python 参考模型差分对比 | 169 项断言全部通过 |
 | `tests/test_spec.py` | 按题面 2.1–2.3 逐条对照（表结构、DML、比较、排序、向量、事务、恢复、输入校验、不支持语句必须报错） | 35 项全部通过 |
-| `tests/run_public_cases.py` | 直接跑官方题包 `mysqltest/cases/*.test` 并核对 `.result` 的 JSON 断言（含 `--restart`、`--mode ann` 驱动指令） | 20/20 用例通过 |
+| `tests/run_public_cases.py` | 在本地控制台上执行 `mysqltest/cases/*.test`，核对 `.result` 的断言 | 20/20 用例通过 |
 | `tests/bench.py` | 10k×128 维写入 + 1000 次 TopK | 见下 |
 | `tests/bench_latency.py` | 同上，并从 stderr 解析服务端单语句耗时 | 见下 |
 | `tests/stress.py` | 150k×128 维（73 MiB 向量）在 256 MiB 容器内写入、查询、重启 | PASS |
@@ -327,8 +341,8 @@ VECTOR 为 dim×4 字节原始 float32。主键单独存在记录头里，便于
 
 ### 7.1 Linux x86_64 容器（正式运行环境）
 
-以下数据由 `docker build` 产出的镜像实测（Ubuntu 24.04 + g++ 13，`-O3 -funroll-loops`，
-容器内 Python 3.12 驱动，与正式评测同为 stdin/stdout 管道）：
+以下数据来自此前镜像上的控制台测试（Ubuntu 24.04 + g++ 13，`-O3 -funroll-loops`，
+容器内 Python 3.12 驱动）：
 
 ```
 $ python3 tests/bench.py
@@ -396,6 +410,7 @@ mini-vectordb/
   src/sql.{h,cpp}          词法/语法分析与语句切分
   src/engine.{h,cpp}       WAL、表、主键索引、向量存储、HNSW
   src/exec.cpp             DDL/DML/SELECT 执行器
-  src/main.cpp             stdin/stdout 前端
+  src/main.cpp             本地 SQL 控制台和进程入口
+  src/jsonl.cpp            正式评测 JSONL 通信层
   tests/                   功能、耐久性、随机差分与基准脚本
 ```

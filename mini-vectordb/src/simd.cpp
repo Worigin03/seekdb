@@ -31,6 +31,25 @@ static float l2sqScalar(const float* a, const float* b, int d) {
 }
 
 #if MVDB_X86
+__attribute__((target("avx2"))) static inline double l2sqExactAvx2(
+    const float* a, const float* b, int d) {
+  __m256d sums = _mm256_setzero_pd();
+  int i = 0;
+  for (; i + 4 <= d; i += 4) {
+    __m256d x = _mm256_sub_pd(_mm256_cvtps_pd(_mm_loadu_ps(a + i)),
+                              _mm256_cvtps_pd(_mm_loadu_ps(b + i)));
+    sums = _mm256_add_pd(sums, _mm256_mul_pd(x, x));
+  }
+  // Match the scalar reference's four accumulators and reduction order.
+  double lanes[4];
+  _mm256_storeu_pd(lanes, sums);
+  for (; i < d; i++) {
+    double x = (double)a[i] - (double)b[i];
+    lanes[0] += x * x;
+  }
+  return lanes[0] + lanes[1] + lanes[2] + lanes[3];
+}
+
 __attribute__((target("avx2,fma"))) static inline float l2sqAvx2(const float* __restrict a,
                                                                 const float* __restrict b,
                                                                 int d) {
@@ -119,12 +138,12 @@ struct TopK {
 
   // True when (d, pk) must be ordered after (bd, bpk). Ties always break by
   // ascending primary key, whichever direction the distance runs.
-  inline bool worse(float d, int64_t pk, float bd, int64_t bpk) const {
+  inline bool worse(double d, int64_t pk, double bd, int64_t bpk) const {
     if (d != bd) return desc ? (d < bd) : (d > bd);
     return pk > bpk;
   }
 
-  inline void add(float d, int64_t pk, uint32_t rowid) {
+  inline void add(double d, int64_t pk, uint32_t rowid) {
     if (nb < k) {
       int i = nb++;
       while (i > 0 && worse(best[i - 1].d, best[i - 1].pk, d, pk)) {
@@ -151,7 +170,7 @@ struct TopK {
   for (uint64_t r = 0; r < n; r++) {                                            \
     if (!live[r]) continue;                                                     \
     __builtin_prefetch(base + (size_t)(r + 8) * stride);                        \
-    float d = DIST(base + (size_t)r * stride, q, dim);                          \
+    double d = DIST(base + (size_t)r * stride, q, dim);                         \
     tk.add(d, pks[r], (uint32_t)r);                                             \
   }                                                                             \
   return tk.nb;
@@ -163,7 +182,7 @@ struct TopK {
   for (size_t i = 0; i < count; i++) {                                          \
     uint32_t r = rowids[i];                                                     \
     if (i + 4 < count) __builtin_prefetch(base + (size_t)rowids[i + 4] * stride);\
-    float d = DIST(base + (size_t)r * stride, q, dim);                          \
+    double d = DIST(base + (size_t)r * stride, q, dim);                         \
     tk.add(d, pks[r], r);                                                       \
   }                                                                             \
   return tk.nb;
@@ -171,29 +190,29 @@ struct TopK {
 static int scanRangeScalar(const float* base, int dim, const uint8_t* live,
                            const int64_t* pks, uint64_t n, const float* q, int k, int desc,
                            CandOut* out) {
-  MVDB_SCAN_RANGE_BODY(l2sqScalar)
+  MVDB_SCAN_RANGE_BODY(l2sqRef)
 }
 
 static int scanGatherScalar(const float* base, int dim, const uint32_t* rowids, size_t count,
                             const int64_t* pks, const float* q, int k, int desc, CandOut* out) {
-  MVDB_SCAN_GATHER_BODY(l2sqScalar)
+  MVDB_SCAN_GATHER_BODY(l2sqRef)
 }
 
 #if MVDB_X86
-__attribute__((target("avx2,fma"))) static int scanRangeAvx2(const float* base, int dim,
+__attribute__((target("avx2"))) static int scanRangeAvx2(const float* base, int dim,
                                                              const uint8_t* live,
                                                              const int64_t* pks, uint64_t n,
                                                              const float* q, int k, int desc,
                                                              CandOut* out) {
-  MVDB_SCAN_RANGE_BODY(l2sqAvx2)
+  MVDB_SCAN_RANGE_BODY(l2sqExactAvx2)
 }
 
-__attribute__((target("avx2,fma"))) static int scanGatherAvx2(const float* base, int dim,
+__attribute__((target("avx2"))) static int scanGatherAvx2(const float* base, int dim,
                                                               const uint32_t* rowids,
                                                               size_t count, const int64_t* pks,
                                                               const float* q, int k, int desc,
                                                               CandOut* out) {
-  MVDB_SCAN_GATHER_BODY(l2sqAvx2)
+  MVDB_SCAN_GATHER_BODY(l2sqExactAvx2)
 }
 #endif
 
@@ -218,7 +237,7 @@ int scanTopKGather(const float* base, int dim, const uint32_t* rowids, size_t co
 int mergeTopK(const CandOut* const* parts, const int* counts, int nparts, int k, int desc,
               CandOut* out) {
   struct Item {
-    float d;
+    double d;
     int64_t pk;
     uint32_t rowid;
     int part;

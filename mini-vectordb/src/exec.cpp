@@ -527,7 +527,13 @@ struct Cand {
 };
 }  // namespace
 
-void Database::execSelect(const Stmt& st, ResultSet& rs) {
+static Database::ResultCell resultCell(const Value& value) {
+  if (value.type == Type::BIGINT) return value.i;
+  if (value.type == Type::VARCHAR) return value.s;
+  return value.v;
+}
+
+void Database::execSelect(const Stmt& st, ResultSet& rs, const std::string& searchMode) {
   Table* t = getTableOrThrow(st.select.table);
   const Schema& sc = t->schema;
 
@@ -649,8 +655,7 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
   auto passes = [&](uint64_t r) -> bool { return !where || evalCond(*t, *where, r); };
   int dim = sc.vec >= 0 ? sc.cols[sc.vec].len : 0;
   const float* vbase = (dim > 0 && t->vecs) ? t->vecs->base() : nullptr;
-  // Output distances are recomputed in float64 for the (few) returned rows so
-  // they agree with a double-precision reference implementation.
+  // Stored components are float32, but squared distances need float64 range.
   auto distOf = [&](uint64_t r, const std::vector<float>& q) -> double {
     return l2sqRef(vbase + r * (size_t)dim, q.data(), dim);
   };
@@ -663,11 +668,12 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
   if (orderDist && lim > 0 && dim > 0) {
     // Never ask the scan kernel for more slots than there are rows: LIMIT may
     // legally be far larger than the table.
-    int64_t k = std::min<int64_t>(lim + off, (int64_t)t->nextRowid);
-    if (k <= 0) return;
+    const int64_t rowCount = (int64_t)t->nextRowid;
+    if (off >= rowCount) return;
+    const int64_t k = off + std::min(lim, rowCount - off);
     std::vector<Cand> results;
     bool usedIndex = false;
-    if (vectorMode_ == "ann" && t->hnsw) {
+    if (searchMode == "ann" && t->hnsw && !orderDesc) {
       auto accept = [&](uint64_t r) { return passes(r); };
       std::vector<std::pair<float, uint64_t>> hits;
       static const int efOverride = getenv("MVDB_HNSW_EF") ? atoi(getenv("MVDB_HNSW_EF")) : 0;
@@ -687,7 +693,7 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
       for (uint64_t r = 0; r < t->nextRowid; r++) {
         if (!t->live[r]) continue;
         if (where && !evalCond(*t, *where, r)) continue;
-        all.push_back(Cand{(double)l2sq(vbase + r * (size_t)dim, orderQ.data(), dim), t->pkOf[r], r});
+        all.push_back(Cand{distOf(r, orderQ), t->pkOf[r], r});
       }
       auto cmp = [&](const Cand& a, const Cand& b) {
         if (a.d != b.d) return orderDesc ? (a.d > b.d) : (a.d < b.d);
@@ -772,15 +778,16 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
       if (emitted++ >= lim) break;
       const Cand& c = results[ri];
       decodeRowAt(*t, c.rowid, row);
-      std::vector<std::string> out;
+      std::vector<ResultCell> out;
+      out.reserve(items.size());
       for (auto& it : items) {
         if (it.dist) {
           double d2 = distOf(c.rowid, it.q);
-          out.push_back(formatDouble(it.squared ? d2 : std::sqrt(d2)));
+          out.emplace_back(it.squared ? d2 : std::sqrt(d2));
         } else if (it.isConst) {
-          out.push_back(formatValue(it.cval));
+          out.push_back(resultCell(it.cval));
         } else {
-          out.push_back(formatValue(row[it.col]));
+          out.push_back(resultCell(row[it.col]));
         }
       }
       rs.rows.push_back(std::move(out));
@@ -849,15 +856,16 @@ void Database::execSelect(const Stmt& st, ResultSet& rs) {
   std::vector<Value> outRow;
   for (auto& sr : rows) {
     decodeRowAt(*t, sr.rowid, outRow);
-    std::vector<std::string> out;
+    std::vector<ResultCell> out;
+    out.reserve(items.size());
     for (auto& it : items) {
       if (it.dist) {
         double d2 = distOf(sr.rowid, it.q);
-        out.push_back(formatDouble(it.squared ? d2 : std::sqrt(d2)));
+        out.emplace_back(it.squared ? d2 : std::sqrt(d2));
       } else if (it.isConst) {
-        out.push_back(formatValue(it.cval));
+        out.push_back(resultCell(it.cval));
       } else {
-        out.push_back(formatValue(outRow[it.col]));
+        out.push_back(resultCell(outRow[it.col]));
       }
     }
     rs.rows.push_back(std::move(out));
@@ -885,7 +893,7 @@ void Database::execDescribe(const Stmt& st, ResultSet& rs) {
     if (c.type == Type::BIGINT) type = "bigint";
     else if (c.type == Type::VARCHAR) type = "varchar(" + std::to_string(c.len) + ")";
     else type = "vector(" + std::to_string(c.len) + ")";
-    rs.rows.push_back({c.name, type, (int)i == t->schema.pk ? "PRI" : ""});
+    rs.rows.push_back({c.name, type, std::string((int)i == t->schema.pk ? "PRI" : "")});
   }
 }
 
@@ -945,7 +953,7 @@ void Database::compact() {
 
 // ------------------------------------------------------------------ execute ---
 
-void Database::execute(const std::string& sql, ResultSet& rs) {
+void Database::execute(const std::string& sql, ResultSet& rs, const std::string& searchMode) {
   static const bool timing = getenv("MVDB_TIMING") != nullptr;
   int64_t t0 = timing ? nowMicros() : 0;
   Stmt st = parseStatement(sql);
@@ -988,6 +996,12 @@ void Database::execute(const std::string& sql, ResultSet& rs) {
       break;
   }
 
+  // DDL implicitly commits an open transaction. Capture the rollback point
+  // after that commit so a failed DDL cannot truncate the earlier commit.
+  if (inTxn_ && (st.kind == Stmt::CREATE_TABLE || st.kind == Stmt::DROP_TABLE ||
+                 st.kind == Stmt::CREATE_INDEX)) {
+    commitTxn();
+  }
   bool autoCommit = !inTxn_;
   uint64_t walMark = wal_.size();
   size_t undoMark = undo_.size();
@@ -996,14 +1010,12 @@ void Database::execute(const std::string& sql, ResultSet& rs) {
       case Stmt::CREATE_TABLE:
       case Stmt::DROP_TABLE:
       case Stmt::CREATE_INDEX:
-        // MySQL semantics: DDL commits the open transaction before it runs.
-        if (inTxn_) commitTxn();
         if (st.kind == Stmt::CREATE_TABLE) execCreateTable(st, rs);
         else if (st.kind == Stmt::DROP_TABLE) execDropTable(st, rs);
         else execCreateIndex(st, rs);
         break;
       case Stmt::INSERT: execInsert(st, rs); break;
-      case Stmt::SELECT: execSelect(st, rs); break;
+      case Stmt::SELECT: execSelect(st, rs, searchMode.empty() ? vectorMode_ : searchMode); break;
       case Stmt::UPDATE: execUpdate(st, rs); break;
       case Stmt::DELETE_: execDelete(st, rs); break;
       default: throwErr(1235, "42000", "unsupported statement");

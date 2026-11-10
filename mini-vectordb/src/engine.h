@@ -7,6 +7,7 @@
 #include <vector>
 #include <unordered_map>
 #include <functional>
+#include <variant>
 
 #include "platform.h"
 #include "types.h"
@@ -168,12 +169,14 @@ struct Table {
 
 class Database {
  public:
+  using ResultCell = std::variant<int64_t, std::string, std::vector<float>, double>;
+
   struct ResultSet {
     bool hasResult = false;
     // Rows touched by a data-modifying statement (0 for DDL and queries).
     int64_t affected = 0;
     std::vector<std::string> headers;
-    std::vector<std::vector<std::string>> rows;
+    std::vector<std::vector<ResultCell>> rows;
   };
 
   Database() = default;
@@ -181,7 +184,7 @@ class Database {
 
   void open(const std::string& dir);
   void close();
-  void execute(const std::string& sql, ResultSet& rs);
+  void execute(const std::string& sql, ResultSet& rs, const std::string& searchMode = {});
   void dumpInsertTiming();
 
   bool inTransaction() const { return inTxn_; }
@@ -224,7 +227,7 @@ class Database {
   void execDropTable(const Stmt& st, ResultSet& rs);
   void execCreateIndex(const Stmt& st, ResultSet& rs);
   void execInsert(const Stmt& st, ResultSet& rs);
-  void execSelect(const Stmt& st, ResultSet& rs);
+  void execSelect(const Stmt& st, ResultSet& rs, const std::string& searchMode);
   void execUpdate(const Stmt& st, ResultSet& rs);
   void execDelete(const Stmt& st, ResultSet& rs);
   void execShowTables(ResultSet& rs);

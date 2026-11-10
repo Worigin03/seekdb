@@ -232,6 +232,10 @@ class Parser {
       : sql_(sql), t_(std::move(toks)) {}
 
   bool atEnd() const { return cur().kind == TK_END; }
+  bool finish() {
+    acceptPunct(";");
+    return atEnd();
+  }
   const std::string& rest() const { return cur().text; }
 
   Stmt parse() {
@@ -888,7 +892,7 @@ Stmt parseStatement(const std::string& sql) {
   Stmt st = p.parse();
   // Anything left over means the statement is not fully understood: report it
   // instead of silently executing a prefix (the statement forbids that).
-  if (!p.atEnd())
+  if (!p.finish())
     throwErr(1064, "42000", "syntax error near '" + p.rest() + "'");
   return st;
 }

@@ -3,14 +3,13 @@
 #   docker build -t minivectordb .
 #   docker run --rm -i -v /tmp/mvdb-data:/data minivectordb
 #
-# The program reads SQL from stdin, writes results/status to stdout and logs to
-# stderr. It never opens a network port.
+# The program exchanges JSONL with the judge over stdin/stdout and logs to stderr.
 
 FROM ubuntu:24.04 AS build
 
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      g++ ca-certificates \
+      g++ ca-certificates rapidjson-dev \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -34,4 +33,4 @@ RUN apt-get update \
 COPY --from=build /build/mini-vectordb/minivectordb /usr/local/bin/minivectordb
 
 WORKDIR /
-ENTRYPOINT ["/usr/local/bin/minivectordb", "--data-dir=/data"]
+ENTRYPOINT ["/usr/local/bin/minivectordb", "--data-dir=/data", "--jsonl"]

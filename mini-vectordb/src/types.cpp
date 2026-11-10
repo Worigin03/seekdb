@@ -232,26 +232,16 @@ std::string formatDouble(double d) {
   return std::string(buf);
 }
 
-std::string formatValue(const Value& v, bool isDistance) {
-  switch (v.type) {
-    case Type::BIGINT:
-      return std::to_string(v.i);
-    case Type::VARCHAR:
-      return v.s;
-    case Type::VECTOR: {
-      std::string r = "[";
-      char buf[32];
-      for (size_t i = 0; i < v.v.size(); i++) {
-        if (i) r.push_back(',');
-        snprintf(buf, sizeof(buf), "%g", (double)v.v[i]);
-        r += buf;
-      }
-      r.push_back(']');
-      return r;
-    }
+std::string formatVector(const std::vector<float>& v) {
+  std::string r = "[";
+  char buf[32];
+  for (size_t i = 0; i < v.size(); i++) {
+    if (i) r.push_back(',');
+    snprintf(buf, sizeof(buf), "%g", (double)v[i]);
+    r += buf;
   }
-  (void)isDistance;
-  return std::string();
+  r.push_back(']');
+  return r;
 }
 
 }  // namespace mvdb

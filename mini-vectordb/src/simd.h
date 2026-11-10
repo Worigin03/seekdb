@@ -9,12 +9,11 @@ namespace mvdb {
 void initSimd();
 // Squared L2 distance between two float32 vectors of length d.
 float l2sq(const float* a, const float* b, int d);
-// Same value accumulated in float64: used when materialising result rows so the
-// printed distance matches a double-precision reference.
+// Squared L2 accumulated in float64 for exact ranking and distance projection.
 double l2sqRef(const float* a, const float* b, int d);
 
 struct CandOut {
-  float d;
+  double d;
   int64_t pk;
   uint32_t rowid;
 };

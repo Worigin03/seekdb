@@ -189,6 +189,12 @@ def test_limit_and_empty(base):
     check("topk.desc", [x[0] for x in r] == ["3", "2"], str(r))
     _, r = s.sql("SELECT id,L2_DISTANCE(e,'[0,0]') AS d FROM t ORDER BY d LIMIT 0")
     check("limit.zero", r == [], str(r))
+    _, r = s.sql("SELECT id FROM t ORDER BY L2_DISTANCE(e,'[0,0]') LIMIT 9223372036854775807 OFFSET 1")
+    check("limit.offset-overflow", r == [["2"], ["3"]], str(r))
+    s.sql("CREATE TABLE wide (id BIGINT PRIMARY KEY, e VECTOR(4))")
+    s.sql("INSERT INTO wide VALUES (1,'[3e30,0,0,0]'),(2,'[2e30,0,0,0]')")
+    _, r = s.sql("SELECT id FROM wide ORDER BY L2_DISTANCE(e,'[0,0,0,0]') LIMIT 1")
+    check("topk.finite-large-distances", r == [["2"]], str(r))
     s.close()
 
 
