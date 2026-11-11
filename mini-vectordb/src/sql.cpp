@@ -85,7 +85,16 @@ class Lexer {
         i++;
         std::string val;
         bool closed = false;
-        while (i < n) {
+        // Ordinary quoted literals, including large vector strings, can be
+        // copied as one span. Keep the escape-aware path for all other inputs.
+        size_t quote = s_.find(q, i);
+        if (quote != std::string::npos && (quote + 1 == n || s_[quote + 1] != q) &&
+            !memchr(s_.data() + i, '\\', quote - i)) {
+          val.assign(s_, i, quote - i);
+          i = quote + 1;
+          closed = true;
+        }
+        while (!closed && i < n) {
           char d = s_[i];
           if (d == '\\' && i + 1 < n) {
             char e = s_[i + 1];
@@ -118,10 +127,10 @@ class Lexer {
         }
         Token t;
         t.kind = TK_STR;
-        t.text = val;
+        t.text = std::move(val);
         t.pos = start;
         t.end = i;
-        out.push_back(t);
+        out.push_back(std::move(t));
         continue;
       }
       if (c == '`') {
@@ -147,10 +156,10 @@ class Lexer {
         }
         Token t;
         t.kind = TK_IDENT;
-        t.text = val;
+        t.text = std::move(val);
         t.pos = start;
         t.end = i;
-        out.push_back(t);
+        out.push_back(std::move(t));
         continue;
       }
       if (isalpha(c) || c == '_' || c == '$') {
@@ -161,7 +170,7 @@ class Lexer {
         t.text = s_.substr(start, i - start);
         t.pos = start;
         t.end = i;
-        out.push_back(t);
+        out.push_back(std::move(t));
         continue;
       }
       if (isdigit(c) || (c == '.' && i + 1 < n && isdigit((unsigned char)s_[i + 1]))) {
@@ -186,7 +195,7 @@ class Lexer {
         t.text = s_.substr(start, i - start);
         t.pos = start;
         t.end = i;
-        out.push_back(t);
+        out.push_back(std::move(t));
         continue;
       }
       // punctuation
@@ -199,7 +208,7 @@ class Lexer {
         t.text = s_.substr(i, len);
         t.pos = start;
         t.end = i + len;
-        out.push_back(t);
+        out.push_back(std::move(t));
         i += len;
         continue;
       }
@@ -876,7 +885,7 @@ class Parser {
     return st;
   }
 
-  std::string sql_;
+  const std::string& sql_;
   std::vector<Token> t_;
   size_t i_ = 0;
 };

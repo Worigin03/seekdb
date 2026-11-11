@@ -716,11 +716,17 @@ void Database::execSelect(const Stmt& st, ResultSet& rs, const std::string& sear
         if (lo >= hi) return 0;
         if (where) {
           std::vector<uint32_t> hits;
-          hits.reserve((size_t)(hi - lo));
-          for (uint64_t r = lo; r < hi; r++) {
-            if (!t->live[r]) continue;
-            if (!evalCond(*t, *where, r)) continue;
-            hits.push_back((uint32_t)r);
+          if (where->kind == CompiledCond::CMP && where->op == Cond::EQ &&
+              where->type == Type::VARCHAR && t->cache[where->col].hashes.size() >= hi) {
+            const auto& hashes = t->cache[where->col].hashes;
+            for (uint64_t r = lo; r < hi; r++) {
+              if (hashes[r] == where->shash && t->live[r] && evalCond(*t, *where, r))
+                hits.push_back((uint32_t)r);
+            }
+          } else {
+            for (uint64_t r = lo; r < hi; r++) {
+              if (t->live[r] && evalCond(*t, *where, r)) hits.push_back((uint32_t)r);
+            }
           }
           return scanTopKGather(vbase, dim, hits.data(), hits.size(), t->pkOf.data(),
                                 orderQ.data(), (int)k, kd, out);
