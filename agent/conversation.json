@@ -1,12 +1,12 @@
 {
-  "summary": "参赛者反馈两次正式性能指标 E 为 2914.609847 和 3376.702611，并补充了对协议故障、向量距离计算、VARCHAR 过滤和内存取舍的个人技术复盘。材料保留参赛者的原文摘录，并将各项判断对应到实际测试记录。最新 Agent Prompt 回执的 0 分对应补充复盘前的提交。",
+  "summary": "参赛者反馈两次正式性能指标 E 为 2914.609847 和 3376.702611，并补充了对协议故障、向量距离计算、VARCHAR 过滤和内存取舍的个人技术复盘。材料保留参赛者原话和对应实验记录，也记录助手在两种规模负载上完成的精确 TopK 优化对照。最新 Agent Prompt 回执的 0 分对应补充复盘前的提交。",
   "synthetic": false,
   "scope": {
     "baseline_commit": "a3616b007a2aa7f3e2289637550b492c9bcad367",
     "protocol_package_commit": "f4d4e26653af823a7601668802f80e374ad6643c",
     "material_path": "agent/conversation.json",
     "coverage": "从本聊天可直接核对的用户发言、参赛者后续提供的个人实验复盘及实际工具结果整理。",
-    "attribution": "本地代码修改、自动化测试和基准运行由助手执行。参赛者提供正式平台反馈，并在实验结束后用自己的话解释结果、给出取舍与复测计划。个人复盘中的判断以事后记录收录。",
+    "attribution": "本地代码修改、自动化测试和基准运行由助手执行。参赛者提供正式平台反馈，并在实验结束后用自己的话解释结果、给出取舍与复测计划。个人复盘中的判断以事后记录收录。最新的 TopK 优化与对照由助手执行，见 T8 和 T9。",
     "redaction": "命令和输出省略本机绝对路径、凭据及不相关日志。用户发言摘录保留原文。"
   },
   "conversations": [
@@ -115,6 +115,30 @@
       "related": ["U4", "R1"],
       "setup": "Linux x86_64，基线 2bad48e0f73bc86269f6d884437a572f29544eff。100,000 行 × 128 维、每批 1,000 行、500 次 TopK，基线和候选各三轮。候选减少批量写入的中间拷贝，并跳过只投影主键与距离时的行解码。",
       "output": "两版查询结果 SHA-256 和 WAL 字节数一致。基线与候选的写入耗时中位数分别为 1.4083 和 1.6716 秒，查询耗时分别为 1.0078 和 1.0886 秒，峰值进程 RSS 分别为 122520 和 120228 KiB。候选中位耗时上升，撤回代码改动。"
+    },
+    {
+      "id": "T8",
+      "role": "tool",
+      "record_type": "summary",
+      "related": ["R1"],
+      "setup": "Linux x86_64，基线为正式 E=3376.702611 对应的 2bad48e0f73bc86269f6d884437a572f29544eff。固定种子 19、两个扫描线程，半数查询带 VARCHAR 等值过滤。候选先用 float32 距离和保守误差界排除无法进入当前 TopK 的行，其余用原 float64 路径排序。",
+      "output": "100,000 行 × 128 维、600 次查询，各五轮，查询耗时中位数 1.2106 秒降至 0.8849 秒。30,000 行 × 256 维、400 次查询，各三轮，查询耗时中位数 0.4792 秒降至 0.3510 秒。每组内查询结果 SHA-256 一致，WAL 字节数相同。"
+    },
+    {
+      "id": "T9",
+      "role": "tool",
+      "record_type": "summary",
+      "related": ["T8"],
+      "setup": "以逐行 float64 精确排序为参照，覆盖 32 至 65536 维、有过滤和无过滤、升序和降序、近似并列、float32 上溢及下溢。",
+      "output": "2592 TopK kernel comparisons matched the float64 reference"
+    },
+    {
+      "id": "T10",
+      "role": "tool",
+      "record_type": "summary",
+      "related": ["T8", "T9"],
+      "command": "python3 protocol_check/run.py --image minivectordb:round2-topk --output <new-output-directory>",
+      "output": "最终 Linux amd64 镜像通过官方握手和全部 20 个公开用例。补充容器验证输出 PASS: opaque id, escaping, typed projection, SIGKILL recovery, clean shutdown。Linux 原生项目回归 391 项全部通过，其中 2 项新增断言覆盖预筛选下的极小距离和并列排序。"
     }
   ],
   "retrospective": [

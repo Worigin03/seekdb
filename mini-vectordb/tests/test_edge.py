@@ -195,6 +195,20 @@ def test_limit_and_empty(base):
     s.sql("INSERT INTO wide VALUES (1,'[3e30,0,0,0]'),(2,'[2e30,0,0,0]')")
     _, r = s.sql("SELECT id FROM wide ORDER BY L2_DISTANCE(e,'[0,0,0,0]') LIMIT 1")
     check("topk.finite-large-distances", r == [["2"]], str(r))
+    s.sql("CREATE TABLE cutoff (id BIGINT PRIMARY KEY, label VARCHAR(8), e VECTOR(32))")
+    def first_component(value):
+        return "'[" + value + ",0" * 31 + "]'"
+    samples = [(9, "keep", "1.0000001"), (8, "keep", "1"), (7, "keep", "-1"),
+               (6, "keep", "1e-25"), (5, "keep", "2e-25"), (4, "keep", "3e30"),
+               (3, "skip", "0"), (2, "keep", "1"), (1, "keep", "4")]
+    values = ",".join(f"({ident},'{label}',{first_component(value)})"
+                      for ident, label, value in samples)
+    s.sql("INSERT INTO cutoff VALUES " + values)
+    order = f"ORDER BY L2_DISTANCE(e,{first_component('0')})"
+    _, r = s.sql(f"SELECT id FROM cutoff WHERE label = 'keep' {order} LIMIT 4")
+    check("topk.cutoff-near-ties-and-underflow", r == [["6"], ["5"], ["2"], ["7"]], str(r))
+    _, r = s.sql(f"SELECT id FROM cutoff {order} LIMIT 4")
+    check("topk.cutoff-unfiltered", r == [["3"], ["6"], ["5"], ["2"]], str(r))
     s.close()
 
 
