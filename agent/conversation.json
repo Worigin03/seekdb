@@ -1,11 +1,12 @@
 {
-  "summary": "参赛者报告 MiniVectorDB 正式准入失败并要求修复，随后反馈平台性能指标 E=2914.609847 及 Agent Prompt 未参与排名的提示。记录包含握手失败复现、JSONL 容器复测、性能方案试错与对照实验，以及对材料提交规则的核对。用户原话、助手判断和工具结果分别标注。",
+  "summary": "参赛者反馈两次正式性能指标 E 为 2914.609847 和 3376.702611，并补充了对协议故障、向量距离计算、VARCHAR 过滤和内存取舍的个人技术复盘。材料保留参赛者的原文摘录，并将各项判断对应到实际测试记录。最新 Agent Prompt 回执的 0 分对应补充复盘前的提交。",
   "synthetic": false,
   "scope": {
     "baseline_commit": "a3616b007a2aa7f3e2289637550b492c9bcad367",
     "protocol_package_commit": "f4d4e26653af823a7601668802f80e374ad6643c",
     "material_path": "agent/conversation.json",
-    "coverage": "从本聊天可直接核对的用户发言及实际工具结果整理，保留与本次修正相关的片段。",
+    "coverage": "从本聊天可直接核对的用户发言、参赛者后续提供的个人实验复盘及实际工具结果整理。",
+    "attribution": "本地代码修改、自动化测试和基准运行由助手执行。参赛者提供正式平台反馈，并在实验结束后用自己的话解释结果、给出取舍与复测计划。个人复盘中的判断以事后记录收录。",
     "redaction": "命令和输出省略本机绝对路径、凭据及不相关日志。用户发言摘录保留原文。"
   },
   "conversations": [
@@ -39,6 +40,24 @@
       "role": "assistant",
       "record_type": "summary",
       "content": "第 3.4 节要求引用可定位的原文并按真实贡献评审，第 4.4 节规定默认材料路径、JSON 编码和大小限制。当前回执无法区分缺摘要、待复核和分值检查。以题面核对可修改的材料，保留用户提供的 E 原值。"
+    },
+    {
+      "id": "U4",
+      "role": "user",
+      "excerpt": true,
+      "content": "为什么评测成功但是是0分，请你修正",
+      "performance_request": "3376.702611，能否进一步提高分数",
+      "context": "参赛者转述性能和 Agent Prompt 两项正式平台结果。"
+    }
+  ],
+  "platform_feedback": [
+    {
+      "id": "R1",
+      "source": "参赛者转述的平台回执",
+      "related": ["U3", "U4", "T4", "T6"],
+      "performance_output": "性能评测完成；原始指标 E = 3376.702611",
+      "prompt_output": "Agent Prompt评测完成；原始分 = 0.000000",
+      "context": "上次反馈中的 E 为 2914.609847，见 /conversations/3/content。本条保留新回执原文，具体评审分项未随回执提供。"
     }
   ],
   "experiments": [
@@ -88,6 +107,14 @@
       "related": ["U3", "T4", "T5"],
       "command": "python3 protocol_check/run.py --image minivectordb:round2-perf --output <new-output-directory>",
       "output": "首次通过 WSL 转发 Docker CLI 运行时，sql_bigint 的 docker run 退出等待超时。对同一镜像重跑，官方握手及 20 个公开用例全部通过，Windows 原生 Docker 管道也通过同组官方断言。额外容器检查输出 PASS: opaque id, escaping, typed projection, SIGKILL recovery, clean shutdown。"
+    },
+    {
+      "id": "T7",
+      "role": "tool",
+      "record_type": "summary",
+      "related": ["U4", "R1"],
+      "setup": "Linux x86_64，基线 2bad48e0f73bc86269f6d884437a572f29544eff。100,000 行 × 128 维、每批 1,000 行、500 次 TopK，基线和候选各三轮。候选减少批量写入的中间拷贝，并跳过只投影主键与距离时的行解码。",
+      "output": "两版查询结果 SHA-256 和 WAL 字节数一致。基线与候选的写入耗时中位数分别为 1.4083 和 1.6716 秒，查询耗时分别为 1.0078 和 1.0886 秒，峰值进程 RSS 分别为 122520 和 120228 KiB。候选中位耗时上升，撤回代码改动。"
     }
   ],
   "retrospective": [
@@ -98,11 +125,74 @@
     {
       "role": "assistant",
       "content": "题面第 3.3 节给予向量查询三分之二的性能权重。交错四行的距离计算虽保持结果一致，实测却退化。保留解析和过滤改动，因为两者减少了可定位的字符串复制与无效候选检查，且相同输入上的响应一致。可把先比较结果再比较耗时的方法迁移到其他 SQL 优化。"
+    },
+    {
+      "id": "U5-protocol",
+      "role": "user",
+      "record_type": "retrospective_excerpt",
+      "source_section": "参赛者提供的个人复盘，第二节",
+      "content": "这意味着失败发生在实际 SQL 测试之前，而不一定是 SQL 执行逻辑出现了错误。",
+      "decision": "因此，在后续评估中，我认为应当优先保证协议和功能验证通过，再开展性能优化，避免在基础正确性尚未确认时投入大量调优工作。"
+    },
+    {
+      "id": "U5-distance",
+      "role": "user",
+      "record_type": "retrospective_excerpt",
+      "source_section": "参赛者提供的个人复盘，第四节",
+      "content": "即使一个方案在理论上具有一定的并行性或指令调度优势，也可能受到编译器优化、缓存访问、循环结构和实际硬件执行特性的影响。",
+      "decision": "因此，我倾向于不保留这个性能退化的方案。"
+    },
+    {
+      "id": "U5-filter",
+      "role": "user",
+      "record_type": "retrospective_excerpt",
+      "source_section": "参赛者提供的个人复盘，第五节",
+      "content": "尤其是 VARCHAR 哈希过滤优化，并没有直接将哈希值相等视为字符串相等，而是继续进行真实值验证。",
+      "decision": "从当前实验结果看，这一版本值得保留。"
+    },
+    {
+      "id": "U5-metrics",
+      "role": "user",
+      "record_type": "retrospective_excerpt",
+      "source_section": "参赛者提供的个人复盘，第六节",
+      "content": "本地测试主要测量写入、查询墙钟耗时、进程 RSS 和 WAL 文件大小，而正式平台还涉及自己的测试负载、物理 I/O、容器峰值内存及指标计算方式。"
+    },
+    {
+      "id": "U5-tradeoff",
+      "role": "user",
+      "record_type": "retrospective_excerpt",
+      "source_section": "参赛者提供的个人复盘，第七节",
+      "content": "原因在于，约 1.9% 的单进程峰值内存收益较小，而写入与查询耗时分别增加约 18.7% 和 8.0%。\n\n当前数据不足以证明内存收益能够抵消执行时间上的损失，也没有证据表明候选版本能够使正式平台的 E 进一步提升。",
+      "decision": "当然，不能排除其他负载下该方案可能更有优势，但就目前掌握的数据而言，暂时保留 E=3376.702611 对应的版本是更有依据的选择。",
+      "planned_followup": "如果继续研究，我希望补充更多数据规模、不同查询过滤比例及容器级资源消耗的对照测试，避免仅以单一负载作出普遍结论。"
+    }
+  ],
+  "evidence_index": [
+    {
+      "topic": "握手失败发生的阶段及验证顺序",
+      "participant": ["/retrospective/2/content", "/retrospective/2/decision"],
+      "results": ["/experiments/0/output", "/experiments/1/output"]
+    },
+    {
+      "topic": "交错距离计算的实测退化及方案取舍",
+      "participant": ["/retrospective/3/content", "/retrospective/3/decision"],
+      "results": ["/experiments/2/output"]
+    },
+    {
+      "topic": "VARCHAR 哈希预筛选的语义边界及保留依据",
+      "participant": ["/retrospective/4/content", "/retrospective/4/decision", "/retrospective/5/content"],
+      "results": ["/experiments/3/output", "/experiments/5/output", "/platform_feedback/0/performance_output"]
+    },
+    {
+      "topic": "更大负载下的内存与耗时取舍",
+      "participant": ["/retrospective/6/content", "/retrospective/6/decision"],
+      "results": ["/experiments/6/output"],
+      "planned_followup": "/retrospective/6/planned_followup"
     }
   ],
   "limitations": [
-    "实验设计、运行和技术复盘由助手完成。用户提供了正式评测反馈和修正目标。此材料范围内没有记录用户对向量内核原理的独立解释或独立运行本地复测的结果。",
-    "平台回执由用户转述。当前未获得平台生成的逐轮评审、材料摘要或具体错误字段，无法确定原回执对应的复核类别。",
+    "参赛者的判断形成于已有实验结果之后。更多数据规模、过滤比例及容器资源的对照实验是后续计划。",
+    "最新回执对应补充个人复盘前的提交。材料未获得该次逐轮评审报告。",
     "本地 benchmark 记录墙钟时间、WAL 文件大小和单进程 RSS。题面使用专用设备的物理 I/O 和整个容器的峰值内存，正式 E 还依赖平台基线及冻结配置。"
   ]
 }
