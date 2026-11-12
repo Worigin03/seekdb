@@ -1,12 +1,12 @@
 {
-  "summary": "参赛者反馈两次正式性能指标 E 为 2914.609847 和 3376.702611，并补充了对协议故障、向量距离计算、VARCHAR 过滤和内存取舍的个人技术复盘。材料保留参赛者原话和对应实验记录，也记录助手在两种规模负载上完成的精确 TopK 优化对照。最新 Agent Prompt 回执的 0 分对应补充复盘前的提交。",
+  "summary": "参赛者反馈正式评测结果并提供协议定位、TopK 优化及内存取舍的技术复盘。针对第 K 名边界，助手完成单线程 SQL 与内核对照（T11、T12），参赛者用原话解释结果、决定保留 0dec1df 的优化并要求补测多线程（U7）。助手随后对 0dec1df、6c1655a 完成 32 组实际双线程分片合并对照，结果均与逐行 float64 全排序一致（T13）。T14 记录 6c1655a 的五轮本地性能对照及功能验证。",
   "synthetic": false,
   "scope": {
     "baseline_commit": "a3616b007a2aa7f3e2289637550b492c9bcad367",
     "protocol_package_commit": "f4d4e26653af823a7601668802f80e374ad6643c",
     "material_path": "agent/conversation.json",
-    "coverage": "从本聊天可直接核对的用户发言、参赛者后续提供的个人实验复盘及实际工具结果整理。",
-    "attribution": "本地代码修改、自动化测试和基准运行由助手执行。参赛者提供正式平台反馈，并在实验结束后用自己的话解释结果、给出取舍与复测计划。个人复盘中的判断以事后记录收录。最新的 TopK 优化与对照由助手执行，见 T8 和 T9。",
+    "coverage": "从本聊天可直接核对的用户发言、参赛者后续提供的个人实验复盘及实际工具结果整理。追加本轮 Prompt、单线程实测、参赛者判断和双线程复测（U6、T11、T12、U7、T13）。",
+    "attribution": "本地代码修改、自动化测试和基准运行由助手执行。参赛者提供正式平台反馈，并在实验结束后用自己的话解释结果、给出取舍与复测计划。个人复盘中的判断以事后记录收录。最新的 TopK 优化与对照由助手执行，见 T8 和 T9。U6 的括号内容由助手协助填写。U7 的 content 是参赛者随后在本对话中发送的判断原文。对照实验、距离探针与跳过计数插桩由助手执行，见 T11 和 T12。",
     "redaction": "命令和输出省略本机绝对路径、凭据及不相关日志。用户发言摘录保留原文。"
   },
   "conversations": [
@@ -48,6 +48,34 @@
       "content": "为什么评测成功但是是0分，请你修正",
       "performance_request": "3376.702611，能否进一步提高分数",
       "context": "参赛者转述性能和 Agent Prompt 两项正式平台结果。"
+    },
+    {
+      "id": "U6",
+      "role": "user",
+      "record_type": "prompt",
+      "related": [
+        "T11",
+        "T12",
+        "U7"
+      ],
+      "content": "我想验证提交 0dec1df 的 float32 预筛选，在精确 TopK 的第 K 名附近，会不会漏掉本应入选的向量。我的预测是：最容易出错的是「堆刚填满、当前第 K 名距离（cutoff）刚建立之后，扫描到一个 float32 估计略高于 cutoff、但 float64 精确距离 ≤ cutoff 的候选」，尤其是这个候选与第 K 名在 float32 下距离相同、在 float64 下距离不同，主键更小却被排在最后（插入顺序与主键顺序相反），并且带 VARCHAR 等值过滤的时候。因为 addAvx2 一旦命中 estimate > cutoff*(1+margin)+underflow 就直接 return，该行永远不再走 l2sqExactAvx2 的 float64 路径；而守卫只比较距离，不知道 TopK::worse() 在并列时按主键升序裁决，小主键的行本应挤掉第 K 名；有过滤时走的是 scanTopKGather 这条独立路径，cutoff 来自不同子集，第 K 名边界会移动。另外 float32 估计上溢成 inf、极小距离下溢成 0 也是我需要盯的数值角落。\n请用同一批向量和查询，对比新版与逐行 float64 计算后完整排序的参考实现。构造两个候选在 float32 下距离相同、在 float64 下距离不同的用例，把它们放在第 K 名附近。再构造 float64 距离完全相同的用例，检查主键升序的并列规则。分别跑无过滤和有 VARCHAR 等值过滤两种情况，并让插入顺序与主键顺序相反。\n我的通过标准是：比对返回行数、每个名次的主键 id（顺序敏感）、每个名次的 L2_SQUARED_DISTANCE（原始字符串与解析值）、id↔距离绑定、并列组内主键是否严格升序、两种插入顺序结果是否相同、无过滤/有过滤各自与参考一致，并要求父提交 a492e27 的纯 float64 TopK 与 Python 参考一致。出现以下任一情况就拒绝保留优化并保留第一个反例：① 参考 TopK 中有而新版缺失的 id，或反之；② 任一名次 id 或距离不同，或距离贴错 id；③ float64 完全并列时主键不是升序，或结果随插入顺序变化；④ 任一路径与参考不一致；⑤ 预筛选跳过计数器为 0（用例没走到优化分支，本次验证无效，必须重造而不是判通过）。\n请输出可复现的命令、输入、参考结果和实际结果。若有差异，保留第一个反例。跑完后先把结果给我，由我判断是否保留优化，以及还要补哪一项验证。\n根据 https://github.com/Worigin03/seekdb 仓库分支 2026-competition-round2，填写一下括号里的内容。",
+      "bracket_fill_note": "原始两处括号为 [写下你认为最容易出错的情况，以及为什么] 与 [写下你要比对哪些字段，以及什么结果会让我拒绝保留优化]。括号内文字由助手依据 0dec1df 的 mini-vectordb/src/simd.cpp 中 addAvx2 / TopK::worse 代拟，参赛者采纳为本轮假设与通过标准。",
+      "context": "参赛者发起本轮验证请求，目标提交 0dec1df，分支 2026-competition-round2。同轮追加告知最新实验结果已推送到 6c1655af0c2e22579d3730ca0cf8b0980287adb8；助手核对后确认分支 HEAD 已由 0dec1df 前移，仍显式 pin 到 0dec1df 验证，并把 6c1655a 作为附加对照。"
+    },
+    {
+      "id": "U7",
+      "role": "user",
+      "record_type": "decision",
+      "related": [
+        "U6",
+        "T11",
+        "T12"
+      ],
+      "content": "预测被推翻了。我最担心的是「float32 估计越过 cutoff 就被直接跳过、连 float64 都不算」会在第 K 名边界漏掉本应入选的向量，特别是 float32 相同而 float64 不同、又要靠小主键决胜的那一行。A1/A2 两条结果正打在这个点上：K=12 时 0dec1df 选出 pk=16（d=1）、排除 pk=5（d=1.0000000099999995），K=13 才纳入 pk=5 并给出正确的 float64 距离，与逐行 float64 全排序和父提交 a492e27 逐条一致；float64 完全并列时主键严格升序，插入顺序反转、有/无 VARCHAR 等值过滤都没有改变结果。T12 里 11688 次真实跳过说明这不是空跑，而是优化确实生效后仍没有误跳过。据此我决定保留 0dec1df 的 float32 预筛选，不要求回退，也不把「预测成立」当成后续版本的风险豁免。结论只适用于已测场景：dim 32–256、单线程 scanRange/scanGather、距离升序、k≤256、输入为有限 float32 的静态表。多线程分片 + mergeTopK、ORDER BY DESC、k>256 的 partial_sort、dim=65536，以及 6c1655a 新增的 AVX-512 估计器和 VARCHAR 过滤行缓存都不在证据范围内；分支 HEAD 已前移，结论不自动外推。我要求补的第一项验证是多线程分片路径下同一组第 K 名边界用例。",
+      "scope_of_conclusion": "dim 32–256、单线程 scanRange / scanGather、距离升序、k≤256、输入为有限 float32 的静态表；0dec1df 版本。不覆盖多线程分片 + mergeTopK、DESC、k>256、dim=65536、6c1655a 的 AVX-512 估计器与 VARCHAR 过滤行缓存。",
+      "source_note": "content 逐字保留参赛者在本对话中发来的完整判断。原文中的 A1/A2 指 T11 中近似并列数据集的 K=12 和 K=13 两项实验。",
+      "decision": "保留 0dec1df 的 float32 预筛选，不要求回退。",
+      "planned_followup": "补多线程分片路径（每片独立 cutoff + mergeTopK）下同一组第 K 名边界用例。"
     }
   ],
   "platform_feedback": [
@@ -139,6 +167,50 @@
       "related": ["T8", "T9"],
       "command": "python3 protocol_check/run.py --image minivectordb:round2-topk --output <new-output-directory>",
       "output": "最终 Linux amd64 镜像通过官方握手和全部 20 个公开用例。补充容器验证输出 PASS: opaque id, escaping, typed projection, SIGKILL recovery, clean shutdown。Linux 原生项目回归 391 项全部通过，其中 2 项新增断言覆盖预筛选下的极小距离和并列排序。"
+    },
+    {
+      "id": "T11",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "U6",
+        "T9",
+        "T10"
+      ],
+      "command": "python verify.py --all-bins ; python show_case.py ; python make_repro.py",
+      "setup": "Windows / MSYS2 UCRT64 g++ 15.1，CPU 支持 avx2+fma。三个独立构建：0dec1df（新版预筛选）、a492e27（父提交，纯 float64 TopK）、6c1655a（分支 HEAD）。参考实现为独立 Python：复刻 parseDoubleFast 得到 float32 存储值、按 l2sqRef 的四累加器逐行 float64 计算平方 L2，再做完整排序 (d, pk)。同一批 20 行 × VECTOR(32)，查询为全零向量，按主键降序插入；对 K=1..N 全扫描，覆盖无过滤 / WHERE label='keep'、近似并列、float64 完全并列、cutoff=0、float32 上溢与下溢、以及 dim=31 关闭预筛选的对照组。",
+      "output": "SQL 级对照：3276 次查询，0 处不一致（18 组数据集 × 2 种插入顺序 × 无过滤/有过滤 × K=1..N × 0dec1df / a492e27 / 6c1655a 三个构建）；first_counterexample=null，first_counterexample.json 未生成。引擎自身距离探针给出 float32 估计 / float64 精确：pk 16、15、3 为 1 / 1；pk 5 为 1 / 1.0000000099999995；pk 4 为 1 / 1.000000039999998（构成「float32 相同、float64 不同」的候选对）；3e30 行估计 inf、精确 8.9999993641600385e+60；1e-25 行估计 0、精确 1.0000000390829631e-50。\n关键边界（插入顺序 = 主键降序）：无过滤 K=12 参考 17:0,18:0,19:0,20:0,6:1.0000000390829631e-50,9:1.0000000390829631e-50,8:4.0000001563318526e-50,7:9.0000003517466682e-50,3:1,14:1,15:1,16:1 —— 三版完全一致；K=13 末尾追加 5:1.0000000099999995，三版完全一致；WHERE label='keep' K=9 参考 17:0,19:0,20:0,9:1.0000000390829631e-50,8:4.0000001563318526e-50,7:9.0000003517466682e-50,3:1,15:1,16:1 —— 三版完全一致。float64 完全并列的 14 行数据：无过滤 K=7 为 1,2,3,4,5,6,7，过滤 K=5 为 1,2,4,5,7（主键升序，与插入顺序无关）；cutoff=0 数据集同样一致。dim=31（预筛选不启用）对照组也一致。三版对 repro.sql 的逐字输出 diff 为空。机器可读结果：verify_result.json、headline_results.txt、repro_*.txt（本轮验证目录）。"
+    },
+    {
+      "id": "T12",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "U6",
+        "T11"
+      ],
+      "command": "python search.py ; probe2.exe 32 <k> <range|gather> <all|keep>",
+      "setup": "对 0dec1df 的 simd.cpp 做只加计数器、不改逻辑的插桩，并用 probe3 调用引擎自身的 l2sq / l2sqRef。重放 TopK 扫描与 float32 守卫，对每个被跳过的行用 float64 复算，检查它是否本应进入最终 TopK；同时与独立全排序结果比对。另用插桩计数器确认预筛选在两条扫描路径上确实生效。",
+      "output": "内核级定向反例搜索：30240 次扫描、11688 次真实触发跳过、0 个误跳过 / 0 个排序不一致（dim 32/33/48/63/64/65/96/128/256，零查询与非零查询各一组，K=1..14，无过滤与 VARCHAR 等值过滤）。判定方式是重放 TopK 扫描与守卫，对每个被跳过的行用 l2sqRef 复算，若其 float64 距离小于最终第 K 名（或等于但主键更小）即记为反例；同时与独立全排序的 id 序列比对。search_result.json: findings=0。\n预筛选有效性插桩（只加计数器、不改逻辑）：range all K=13 checks=6 skips=1 exact=19，跳过样例 [pk=2 est=4 cutoff=1.00000001]；range all K=5 checks=15 skips=6 exact=14，跳过样例 [pk=5 est=1 cutoff=1.00000004e-50]；gather keep K=3 checks=12 skips=7 exact=8，跳过样例 [pk=16 est=1 cutoff=0]。range 与 gather 两条路径都真实触发跳过，排除「用例根本没走到优化分支」。"
+    },
+    {
+      "id": "T13",
+      "role": "tool",
+      "record_type": "summary",
+      "related": ["U7", "T11", "T12"],
+      "command": "python .verify_0dec1df/verify_parallel.py",
+      "setup": "助手分别从 0dec1df 和 6c1655a 的 Git 源码构建临时插桩版。复用 T11 的 32 维近似并列、精确并列和零 cutoff 用例，在原始行两半之间插入 20000 个平方距离为 100 或 400 的行以触发分片。设置 MVDB_THREADS=2、MVDB_PAR_MIN=600000。记录实际线程 ID、分片候选数、合并及预筛选跳过计数。每组运行三次，要求所有输出都匹配逐行 float64 全排序，并且至少一次由两个不同线程执行两片。",
+      "output": "32 组对照全部通过，96 次执行输出均匹配参考，其中 84 次由两个不同线程处理两片后进入 mergeTopK。两个版本各有 16 组覆盖，32 组均确认预筛选确实跳过了候选。主键降序插入时 pk=16 和 pk=5 分属分片 0、1，两版无过滤 K=12 末位为 16:1，K=13 末位为 5:1.0000000099999995；有过滤时对应 K=9、K=10。反转原始行插入顺序、完全并列和零 cutoff 对照也全部匹配。6c1655a 的 8 组过滤对照均记录到候选行缓存路径。机器可读结果为 parallel_result.json。",
+      "scope": "补测仅覆盖两个指定提交、32 维、升序、小 K、有限 float32 静态表及无过滤或 VARCHAR 等值过滤。未覆盖 AVX-512 估计器、DESC、大 K、65536 维或缓存变更后的正确性。"
+    },
+    {
+      "id": "T14",
+      "role": "tool",
+      "record_type": "summary",
+      "related": ["T8", "T13"],
+      "setup": "助手对比提交 0dec1df3409205630d5f0ea3b4776c7236e3a545 和 6c1655af0c2e22579d3730ca0cf8b0980287adb8。Linux x86_64，100000 行、128 维、每批 1000 行，600 次混合 TopK，各五轮，交替运行顺序。参赛者转述的基线正式回执原文为「性能评测完成；原始指标 E = 3847.994551」。",
+      "output": "本地中位数：批量写入由 1.8847 秒降至 1.7359 秒，混合 TopK 由 1.1110 秒降至 0.9864 秒。两版查询结果 SHA-256 一致，WAL 均为 53584434 字节。398 项本地回归、2592 组 TopK 内核对照及容器强杀恢复检查通过。WSL 转发 Docker 的一次退出等待超时，同一镜像通过 Windows 原生 Docker 管道的 20 个公开用例。",
+      "scope": "这些耗时是本地实测。正式 E = 3847.994551 对应基线，6c1655a 的新正式 E 尚未在本对话中收到。"
     }
   ],
   "retrospective": [
@@ -212,11 +284,26 @@
       "participant": ["/retrospective/6/content", "/retrospective/6/decision"],
       "results": ["/experiments/6/output"],
       "planned_followup": "/retrospective/6/planned_followup"
+    },
+    {
+      "topic": "0dec1df float32 预筛选在第 K 名边界的假设、验证与取舍",
+      "prompt": "/conversations/6/content",
+      "participant": [
+        "/conversations/7/content",
+        "/conversations/7/decision"
+      ],
+      "results": [
+        "/experiments/10/output",
+        "/experiments/11/output",
+        "/experiments/12/output"
+      ],
+      "planned_followup": "/conversations/7/planned_followup"
     }
   ],
   "limitations": [
     "参赛者的判断形成于已有实验结果之后。更多数据规模、过滤比例及容器资源的对照实验是后续计划。",
     "最新回执对应补充个人复盘前的提交。材料未获得该次逐轮评审报告。",
-    "本地 benchmark 记录墙钟时间、WAL 文件大小和单进程 RSS。题面使用专用设备的物理 I/O 和整个容器的峰值内存，正式 E 还依赖平台基线及冻结配置。"
+    "本地 benchmark 记录墙钟时间、WAL 文件大小和单进程 RSS。题面使用专用设备的物理 I/O 和整个容器的峰值内存，正式 E 还依赖平台基线及冻结配置。",
+    "U7 的个人判断对应原单线程实验；T13 是随后由助手运行的独立双线程补测。T13 只验证 32 维静态用例，并对 6c1655a 的过滤缓存命中作了路径确认，结论不扩展到 AVX-512、DESC、大 K、65536 维或写入和回滚后的缓存状态。"
   ]
 }
