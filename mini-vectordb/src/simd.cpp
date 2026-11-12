@@ -86,9 +86,39 @@ __attribute__((target("avx2,fma"))) static inline float l2sqAvx2(const float* __
   }
   return s;
 }
+
+__attribute__((target("avx512f,fma"))) static float l2sqAvx512(
+    const float* a, const float* b, int d) {
+  __m512 s0 = _mm512_setzero_ps(), s1 = s0, s2 = s0, s3 = s0;
+  int i = 0;
+  for (; i + 64 <= d; i += 64) {
+    __m512 x0 = _mm512_sub_ps(_mm512_loadu_ps(a + i), _mm512_loadu_ps(b + i));
+    __m512 x1 = _mm512_sub_ps(_mm512_loadu_ps(a + i + 16), _mm512_loadu_ps(b + i + 16));
+    __m512 x2 = _mm512_sub_ps(_mm512_loadu_ps(a + i + 32), _mm512_loadu_ps(b + i + 32));
+    __m512 x3 = _mm512_sub_ps(_mm512_loadu_ps(a + i + 48), _mm512_loadu_ps(b + i + 48));
+    s0 = _mm512_fmadd_ps(x0, x0, s0);
+    s1 = _mm512_fmadd_ps(x1, x1, s1);
+    s2 = _mm512_fmadd_ps(x2, x2, s2);
+    s3 = _mm512_fmadd_ps(x3, x3, s3);
+  }
+  for (; i + 16 <= d; i += 16) {
+    __m512 x = _mm512_sub_ps(_mm512_loadu_ps(a + i), _mm512_loadu_ps(b + i));
+    s0 = _mm512_fmadd_ps(x, x, s0);
+  }
+  if (i < d) {
+    const __mmask16 mask = (__mmask16)((1u << (d - i)) - 1);
+    __m512 x = _mm512_sub_ps(_mm512_maskz_loadu_ps(mask, a + i),
+                             _mm512_maskz_loadu_ps(mask, b + i));
+    s0 = _mm512_fmadd_ps(x, x, s0);
+  }
+  return _mm512_reduce_add_ps(_mm512_add_ps(_mm512_add_ps(s0, s1), _mm512_add_ps(s2, s3)));
+}
 #endif
 
 static bool g_useAvx2 = false;
+#if MVDB_X86
+static bool g_useAvx512 = false;
+#endif
 static bool g_init = false;
 
 void initSimd() {
@@ -96,6 +126,7 @@ void initSimd() {
   g_init = true;
 #if MVDB_X86
   g_useAvx2 = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+  g_useAvx512 = g_useAvx2 && __builtin_cpu_supports("avx512f");
 #endif
 }
 
@@ -170,10 +201,11 @@ static inline void addScalar(TopK& top, const float* row, const float* query,
 }
 
 #if MVDB_X86
-__attribute__((target("avx2"))) static inline void addAvx2(
+template <float (*Estimate)(const float*, const float*, int)>
+__attribute__((target("avx2"))) static inline void addBounded(
     TopK& top, const float* row, const float* query, int dim, int64_t pk, uint32_t rowid) {
   if (!top.desc && dim >= 32 && top.nb == top.k && top.best[top.k - 1].d <= FLT_MAX) {
-    const float estimate = l2sqAvx2(row, query, dim);
+    const float estimate = Estimate(row, query, dim);
     // All accumulated terms are nonnegative. Each term sees a rounded
     // subtraction, a square, and at most dim + 4 rounded additions. For the
     // supported dimensions (<= 65536), this margin also covers the much
@@ -229,7 +261,10 @@ __attribute__((target("avx2"))) static int scanRangeAvx2(const float* base, int 
                                                              const int64_t* pks, uint64_t n,
                                                              const float* q, int k, int desc,
                                                              CandOut* out) {
-  MVDB_SCAN_RANGE_BODY(addAvx2)
+  if (g_useAvx512 && dim >= 64 && !desc) {
+    MVDB_SCAN_RANGE_BODY(addBounded<l2sqAvx512>)
+  }
+  MVDB_SCAN_RANGE_BODY(addBounded<l2sqAvx2>)
 }
 
 __attribute__((target("avx2"))) static int scanGatherAvx2(const float* base, int dim,
@@ -237,7 +272,10 @@ __attribute__((target("avx2"))) static int scanGatherAvx2(const float* base, int
                                                               size_t count, const int64_t* pks,
                                                               const float* q, int k, int desc,
                                                               CandOut* out) {
-  MVDB_SCAN_GATHER_BODY(addAvx2)
+  if (g_useAvx512 && dim >= 64 && !desc) {
+    MVDB_SCAN_GATHER_BODY(addBounded<l2sqAvx512>)
+  }
+  MVDB_SCAN_GATHER_BODY(addBounded<l2sqAvx2>)
 }
 #endif
 

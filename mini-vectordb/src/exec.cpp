@@ -170,6 +170,38 @@ bool Database::evalCond(Table& t, const CompiledCond& c, uint64_t rowid) {
   return cmpStrOp(row[c.col].s.data(), row[c.col].s.size(), c.sval, c.op);
 }
 
+const std::vector<uint32_t>* Database::topkFilterRows(Table& t, const CompiledCond& c) {
+  constexpr size_t maxFilters = 16;
+  constexpr size_t maxRowsPerFilter = 65536;
+  if (c.kind != CompiledCond::CMP || c.op != Cond::EQ || c.type != Type::VARCHAR ||
+      c.sval.size() > 256 || t.nextRowid > UINT32_MAX)
+    return nullptr;
+  const auto& hashes = t.cache[c.col].hashes;
+  if (hashes.size() < t.nextRowid) return nullptr;
+  for (const auto& filter : t.topkFilters) {
+    if (filter.column == c.col && filter.value == c.sval)
+      return filter.usable ? &filter.rowids : nullptr;
+  }
+
+  // Materialize selective matches once per predicate. A dense predicate
+  // uses the normal scan, and mutations invalidate the cached row IDs.
+  TopKFilter filter{c.col, c.sval, true, {}};
+  for (uint64_t rowid = 0; rowid < t.nextRowid; ++rowid) {
+    if (hashes[rowid] != c.shash || !t.live[rowid] || !evalCond(t, c, rowid))
+      continue;
+    if (filter.rowids.size() == maxRowsPerFilter) {
+      filter.usable = false;
+      filter.rowids = std::vector<uint32_t>{};
+      break;
+    }
+    filter.rowids.push_back((uint32_t)rowid);
+  }
+  if (t.topkFilters.size() == maxFilters) t.topkFilters.erase(t.topkFilters.begin());
+  t.topkFilters.push_back(std::move(filter));
+  const auto& entry = t.topkFilters.back();
+  return entry.usable ? &entry.rowids : nullptr;
+}
+
 // --------------------------------------------------------------------- DDL ---
 
 void Database::execCreateTable(const Stmt& st, ResultSet& rs) {
@@ -709,11 +741,15 @@ void Database::execSelect(const Stmt& st, ResultSet& rs, const std::string& sear
       usedIndex = true;  // results already collected
     }
     if (!usedIndex) {
-      const uint64_t nrows = t->nextRowid;
+      const auto* cachedRows = where ? topkFilterRows(*t, *where) : nullptr;
+      const uint64_t nrows = cachedRows ? cachedRows->size() : t->nextRowid;
       const int kd = orderDesc ? 1 : 0;
       // One chunk of the scan: rows [lo, hi) -> best k, ordered best first.
       auto runChunk = [&](uint64_t lo, uint64_t hi, CandOut* out) -> int {
         if (lo >= hi) return 0;
+        if (cachedRows)
+          return scanTopKGather(vbase, dim, cachedRows->data() + lo, hi - lo,
+                                t->pkOf.data(), orderQ.data(), (int)k, kd, out);
         if (where) {
           std::vector<uint32_t> hits;
           if (where->kind == CompiledCond::CMP && where->op == Cond::EQ &&
@@ -740,7 +776,7 @@ void Database::execSelect(const Stmt& st, ResultSet& rs, const std::string& sear
       // Parallel scan for tables large enough to pay for the fan-out. Each
       // worker keeps its own top-k and the caller merges them, so the result
       // set is identical to the single-threaded scan.
-      double work = (double)nrows * (double)std::max(dim, 1);
+      double work = (double)t->nextRowid * (double)std::max(dim, 1);
       static const double parMin = getenv("MVDB_PAR_MIN") ? atof(getenv("MVDB_PAR_MIN")) : 1.5e6;
       int threads = 1;
       if (work >= parMin && k <= 256) {
@@ -748,6 +784,7 @@ void Database::execSelect(const Stmt& st, ResultSet& rs, const std::string& sear
         int maxChunks = (int)(work / 3.0e5);
         if (maxChunks < 1) maxChunks = 1;
         if (threads > maxChunks) threads = maxChunks;
+        if (nrows < (uint64_t)threads) threads = (int)nrows;
       }
       if (threads <= 1) {
         std::vector<CandOut> buf((size_t)k);

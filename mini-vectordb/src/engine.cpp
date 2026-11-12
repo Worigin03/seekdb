@@ -461,8 +461,12 @@ void Database::appendCommit() {
 
 void Database::appendRecords(const std::vector<std::string>& bodies, std::vector<uint64_t>& offs) {
   std::string buf;
+  size_t bytes = 0;
+  for (const auto& body : bodies) bytes += 8 + body.size();
+  buf.reserve(bytes);
   uint64_t base = wal_.size();
   offs.clear();
+  offs.reserve(bodies.size());
   for (auto& b : bodies) {
     offs.push_back(base + buf.size() + 8);
     putU32(buf, (uint32_t)b.size());
@@ -608,6 +612,7 @@ void Database::applyInsert(uint32_t tableId, uint64_t rowid, int64_t pk, const c
   for (auto& p : tables_)
     if (p->id == tableId) t = p.get();
   if (!t) return;
+  t->topkFilters.clear();
   if (rowid >= t->off.size()) {
     size_t n = (size_t)rowid + 1;
     t->off.resize(n, 0);
@@ -683,6 +688,7 @@ void Database::applyUpdate(uint32_t tableId, uint64_t oldRowid, uint64_t newRowi
   for (auto& p : tables_)
     if (p->id == tableId) t = p.get();
   if (!t) return;
+  t->topkFilters.clear();
   if (oldRowid < t->live.size()) {
     t->live[oldRowid] = 0;
     uint64_t cur = 0;
@@ -697,6 +703,7 @@ void Database::applyDelete(uint32_t tableId, uint64_t rowid, int64_t pk) {
   for (auto& p : tables_)
     if (p->id == tableId) t = p.get();
   if (!t) return;
+  t->topkFilters.clear();
   if (rowid < t->live.size()) {
     t->live[rowid] = 0;
     uint64_t cur = 0;
@@ -800,6 +807,7 @@ void Database::undoTo(size_t mark) {
     for (auto& p : tables_)
       if (p->id == u.tableId) t = p.get();
     if (!t) continue;
+    t->topkFilters.clear();
     if (u.kind == 0) {  // undo insert
       if (u.rowid < t->live.size()) {
         t->live[u.rowid] = 0;
@@ -808,6 +816,9 @@ void Database::undoTo(size_t mark) {
       }
     } else {  // undo delete
       if (u.rowid < t->live.size()) {
+        // A column cache first built while this row was deleted skipped it.
+        for (auto& cache : t->cache)
+          if (cache.ready) cache = ColCache{};
         t->live[u.rowid] = 1;
         t->pk.put(u.pk, u.rowid);
       }

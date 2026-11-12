@@ -146,6 +146,13 @@ struct ColCache {
   std::string arena;
 };
 
+struct TopKFilter {
+  int column;
+  std::string value;
+  bool usable = true;
+  std::vector<uint32_t> rowids;
+};
+
 struct Table {
   uint32_t id = 0;
   Schema schema;
@@ -160,6 +167,7 @@ struct Table {
 
   // Lazy per-column filter caches (indexed by rowid).
   std::vector<ColCache> cache;
+  std::vector<TopKFilter> topkFilters;
 
   int vecCol() const { return schema.vec; }
   int pkCol() const { return schema.pk; }
@@ -220,6 +228,7 @@ class Database {
   void ensureCaches(Table& t, int col);
   std::unique_ptr<CompiledCond> compileCond(Table& t, const Cond& c);
   bool evalCond(Table& t, const CompiledCond& c, uint64_t rowid);
+  const std::vector<uint32_t>* topkFilterRows(Table& t, const CompiledCond& condition);
   void decodeRowAt(Table& t, uint64_t rowid, std::vector<Value>& out);
 
   // ---- statements
