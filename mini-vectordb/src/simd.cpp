@@ -261,7 +261,7 @@ __attribute__((target("avx2"))) static int scanRangeAvx2(const float* base, int 
                                                              const int64_t* pks, uint64_t n,
                                                              const float* q, int k, int desc,
                                                              CandOut* out) {
-  if (g_useAvx512 && dim >= 64 && !desc) {
+  if (g_useAvx512 && dim >= 64 && !desc && (double)n * dim > 1.5e6) {
     MVDB_SCAN_RANGE_BODY(addBounded<l2sqAvx512>)
   }
   MVDB_SCAN_RANGE_BODY(addBounded<l2sqAvx2>)
@@ -272,7 +272,7 @@ __attribute__((target("avx2"))) static int scanGatherAvx2(const float* base, int
                                                               size_t count, const int64_t* pks,
                                                               const float* q, int k, int desc,
                                                               CandOut* out) {
-  if (g_useAvx512 && dim >= 64 && !desc) {
+  if (g_useAvx512 && dim >= 64 && !desc && (double)count * dim > 1.5e6) {
     MVDB_SCAN_GATHER_BODY(addBounded<l2sqAvx512>)
   }
   MVDB_SCAN_GATHER_BODY(addBounded<l2sqAvx2>)

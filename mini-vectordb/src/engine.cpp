@@ -461,7 +461,7 @@ void Database::appendCommit() {
 
 void Database::appendRecords(const std::vector<std::string>& bodies, std::vector<uint64_t>& offs) {
   std::string buf;
-  size_t bytes = 0;
+  size_t bytes = inTxn_ ? 0 : 9;  // autocommit footer shares the same pwrite
   for (const auto& body : bodies) bytes += 8 + body.size();
   buf.reserve(bytes);
   uint64_t base = wal_.size();
@@ -472,6 +472,12 @@ void Database::appendRecords(const std::vector<std::string>& bodies, std::vector
     putU32(buf, (uint32_t)b.size());
     putU32(buf, crc32Of(b.data(), b.size()));
     buf.append(b);
+  }
+  if (!inTxn_ && !bodies.empty()) {
+    const char commit = 6;
+    putU32(buf, 1);
+    putU32(buf, crc32Of(&commit, 1));
+    buf.push_back(commit);
   }
   if (!buf.empty()) {
     if (!wal_.writeAt(base, buf.data(), buf.size()))

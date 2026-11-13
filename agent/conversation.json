@@ -1,11 +1,11 @@
 {
-  "summary": "参赛者反馈正式评测结果并提供协议定位、TopK 优化及内存取舍的技术复盘。针对第 K 名边界，助手完成单线程 SQL 与内核对照（T11、T12），参赛者用原话解释结果、决定保留 0dec1df 的优化并要求补测多线程（U7）。助手随后对 0dec1df、6c1655a 完成 32 组实际双线程分片合并对照，结果均与逐行 float64 全排序一致（T13）。T14 记录 6c1655a 的五轮本地性能对照及功能验证。",
+  "summary": "材料记录真实平台反馈、参赛者的技术假设与保留/拒绝决策，以及可定位的实验结果。前期证据包括协议定位、TopK 第 K 名边界、多线程合并和内存取舍。最新一轮（U8、A8、T16–T19）针对正式回执 E=3847.994551 与 Prompt 无效状态，重新核对官方规则，保留按扫描工作量选择 AVX2/AVX512 和 autocommit WAL 合并写入；点积预筛选、半程点积和八累积链因实测退化或无稳定收益而被排除。最终 10k×128 本地交替基准中，TopK 中位耗时 0.212→0.200 秒，写入+查询总耗时中位数 0.700→0.682 秒；398 项本地回归和官方 20 个公开 JSONL 用例全部通过。材料含摘要、原文证据索引、限制和复盘；正式 E 与 Agent Prompt 得分必须重新提测，未用本地数据冒充平台结果。",
   "synthetic": false,
   "scope": {
     "baseline_commit": "a3616b007a2aa7f3e2289637550b492c9bcad367",
     "protocol_package_commit": "f4d4e26653af823a7601668802f80e374ad6643c",
     "material_path": "agent/conversation.json",
-    "coverage": "从本聊天可直接核对的用户发言、参赛者后续提供的个人实验复盘及实际工具结果整理。追加本轮 Prompt、单线程实测、参赛者判断和双线程复测（U6、T11、T12、U7、T13）。",
+    "coverage": "从本聊天可直接核对的用户发言、参赛者后续提供的个人实验复盘及实际工具结果整理。包含前期 Prompt、单/多线程实测和参赛者判断（U6、T11–T14、U7），以及本轮平台回执、优化迭代、公开协议验证和最终基准（U8、A8、T16–T19）。",
     "attribution": "本地代码修改、自动化测试和基准运行由助手执行。参赛者提供正式平台反馈，并在实验结束后用自己的话解释结果、给出取舍与复测计划。个人复盘中的判断以事后记录收录。最新的 TopK 优化与对照由助手执行，见 T8 和 T9。U6 的括号内容由助手协助填写。U7 的 content 是参赛者随后在本对话中发送的判断原文。对照实验、距离探针与跳过计数插桩由助手执行，见 T11 和 T12。",
     "redaction": "命令和输出省略本机绝对路径、凭据及不相关日志。用户发言摘录保留原文。"
   },
@@ -76,6 +76,22 @@
       "source_note": "content 逐字保留参赛者在本对话中发来的完整判断。原文中的 A1/A2 指 T11 中近似并列数据集的 K=12 和 K=13 两项实验。",
       "decision": "保留 0dec1df 的 float32 预筛选，不要求回退。",
       "planned_followup": "补多线程分片路径（每片独立 cutoff + mergeTopK）下同一组第 K 名边界用例。"
+    },
+    {
+      "id": "U8",
+      "role": "user",
+      "record_type": "prompt",
+      "excerpt": true,
+      "related": ["R2", "T16", "T17", "T18", "T19"],
+      "content": "目前最新提交的 MySQL 正式用例已通过，性能原始指标 E=3847.994551；Agent Prompt 显示‘结果无效、待复核、超出平台0–100范围或缺少材料摘要’。根据 https://github.com/Worigin03/seekdb 的 2026-competition-round2 分支，尽可能提高原始指标 E，并修复赛题二提交使其满足评测要求并得分。",
+      "context": "本轮核对的基线 HEAD 为 71ce7f8。用户同时提供既有本地 TopK 优化数据，并要求仔细阅读组织方规则。"
+    },
+    {
+      "id": "A8",
+      "role": "assistant",
+      "record_type": "summary",
+      "related": ["U8", "T16", "T17", "T18", "T19"],
+      "content": "先锁定 71ce7f8 并读取官方第 3.4、4.4 节和 protocol_check，再建立 Linux 2 vCPU 基线。优化采用‘同机交替测量、保留中位数、退化即撤回’：范数+点积、半程点积、float32 范数和 AVX2 八累积链均未保留；最终只保留小扫描 AVX2/大扫描 AVX512 的规模分派，以及 autocommit 数据记录与 COMMIT 合并为一次 pwrite。最终查询中位数由 0.212 降至 0.200 秒，总耗时中位数由 0.700 降至 0.682 秒。材料修复补充摘要、平台原始回执、证据索引、限制和本轮真实实验，不把本地提升写成正式 E，也不代替参赛者编造独立判断。"
     }
   ],
   "platform_feedback": [
@@ -86,6 +102,14 @@
       "performance_output": "性能评测完成；原始指标 E = 3376.702611",
       "prompt_output": "Agent Prompt评测完成；原始分 = 0.000000",
       "context": "上次反馈中的 E 为 2914.609847，见 /conversations/3/content。本条保留新回执原文，具体评审分项未随回执提供。"
+    },
+    {
+      "id": "R2",
+      "source": "参赛者本轮转述的平台回执",
+      "related": ["U8", "A8"],
+      "performance_output": "MySQL 正式用例通过；性能原始指标 E = 3847.994551",
+      "prompt_output": "Prompt结果无效、待复核、超出平台0–100范围或缺少材料摘要",
+      "context": "这是本材料修复前收到的状态文本，同时列举多种可能原因，并未提供可区分的逐项评审报告。修复后是否得分需要下一次正式提测确认。"
     }
   ],
   "experiments": [
@@ -211,6 +235,43 @@
       "setup": "助手对比提交 0dec1df3409205630d5f0ea3b4776c7236e3a545 和 6c1655af0c2e22579d3730ca0cf8b0980287adb8。Linux x86_64，100000 行、128 维、每批 1000 行，600 次混合 TopK，各五轮，交替运行顺序。参赛者转述的基线正式回执原文为「性能评测完成；原始指标 E = 3847.994551」。",
       "output": "本地中位数：批量写入由 1.8847 秒降至 1.7359 秒，混合 TopK 由 1.1110 秒降至 0.9864 秒。两版查询结果 SHA-256 一致，WAL 均为 53584434 字节。398 项本地回归、2592 组 TopK 内核对照及容器强杀恢复检查通过。WSL 转发 Docker 的一次退出等待超时，同一镜像通过 Windows 原生 Docker 管道的 20 个公开用例。",
       "scope": "这些耗时是本地实测。正式 E = 3847.994551 对应基线，6c1655a 的新正式 E 尚未在本对话中收到。"
+    },
+    {
+      "id": "T16",
+      "role": "tool",
+      "record_type": "summary",
+      "related": ["U8", "A8"],
+      "command": "g++ -O3 -std=c++17 -funroll-loops -pthread ... && MVDB_THREADS=2 python3 tests/bench.py；对基线、点积、半程点积和八累积链进行同机交替测试。",
+      "setup": "Linux 2 vCPU Xeon Platinum 8457C；10,000 和 100,000 行、128 维、1,000 次混合 TopK。点积路径仍用 float64 精确距离决定最终排名。",
+      "output": "范数+点积在 10k 的收益不稳定；收紧误差界后基线/候选查询中位数约 0.205/0.207 秒。100k 复测中基线为 0.895–0.906 秒，候选为 0.966–1.031 秒，明确回退。半程点积为 0.214–0.230 秒，慢于全量点积约 0.185–0.197 秒。AVX2 八累积链总查询约 0.244 秒，慢于四链阈值版 0.216–0.232 秒。上述方案均未纳入最终差异。"
+    },
+    {
+      "id": "T17",
+      "role": "tool",
+      "record_type": "summary",
+      "related": ["U8", "T16"],
+      "command": "N=10000或30000 DIM=128或256 Q=1000 MVDB_THREADS=2 python3 tests/bench_latency.py",
+      "setup": "同一二进制分别强制 AVX512、AVX2，解析服务端每条 SQL 的耗时；随后按 n×dim=1.5×10^6 设置自动分派阈值。",
+      "output": "10k×128：AVX512 总查询 0.245 秒、plain 中位 253us、filtered 125us；AVX2 分别为 0.233 秒、218us、102us。30k×256：AVX512 总查询 0.588 秒，AVX2 为 0.611 秒，因此小扫描选 AVX2、大扫描保留 AVX512。自动阈值版复测为 10k 0.220 秒、30k 0.575 秒。"
+    },
+    {
+      "id": "T18",
+      "role": "tool",
+      "record_type": "summary",
+      "related": ["U8", "T17"],
+      "command": "for version in baseline final baseline final baseline final; do MVDB_THREADS=2 python3 tests/bench.py; done",
+      "setup": "最终差异仅包含 SIMD 工作量分派和 autocommit WAL 合并写入。10,000 行×128 维、1,000 查询、每 10 行一条 INSERT，基线与候选交替三轮。",
+      "output": "原始秒数：baseline write=[0.484,0.475,1.423]，query=[0.212,0.225,0.194]；final write=[0.464,0.481,0.484]，query=[0.179,0.201,0.200]。中位数：write 0.484→0.481，query 0.212→0.200，write+query 总耗时 0.700→0.682；分别约 -0.6%、-5.7%、-2.6%。WAL 均为 5.35MB。",
+      "scope": "本地测量，不是平台 E；第三轮基线写入出现离群值，因此总耗时也按每组 write+query 后取中位数，而不是用单轮最好值。"
+    },
+    {
+      "id": "T19",
+      "role": "tool",
+      "record_type": "summary",
+      "related": ["U8", "T18"],
+      "command": "运行六个本地回归脚本；python3 protocol_check/run.py --command '<JSON argv，含 --jsonl>' --handshake-only/--output <new-output-directory>",
+      "output": "test_minivectordb 69、test_spec 35、test_formal 48、test_edge 53、test_extra 24、fuzz 169，合计 398 项通过、0 失败。官方 JSONL handshake PASS，20 个公开用例全部 PASS，覆盖事务原子性、重启、float32、过滤 TopK 和索引维护。",
+      "scope": "公开工具只含 20 个样例，不等同正式 29 个 MySQL 用例全部通过；正式准入和新分数仍由平台确认。"
     }
   ],
   "retrospective": [
@@ -261,6 +322,13 @@
       "content": "原因在于，约 1.9% 的单进程峰值内存收益较小，而写入与查询耗时分别增加约 18.7% 和 8.0%。\n\n当前数据不足以证明内存收益能够抵消执行时间上的损失，也没有证据表明候选版本能够使正式平台的 E 进一步提升。",
       "decision": "当然，不能排除其他负载下该方案可能更有优势，但就目前掌握的数据而言，暂时保留 E=3376.702611 对应的版本是更有依据的选择。",
       "planned_followup": "如果继续研究，我希望补充更多数据规模、不同查询过滤比例及容器级资源消耗的对照测试，避免仅以单一负载作出普遍结论。"
+    },
+    {
+      "id": "A9-retrospective",
+      "role": "assistant",
+      "record_type": "retrospective",
+      "related": ["U8", "T16", "T17", "T18"],
+      "content": "本轮再次说明理论上的计算量下降不等于端到端收益：点积预筛选增加了一次全量点积，半程点积仍要读另一半向量，八累积链则提高寄存器压力。可迁移的方法是先在目标负载和较大规模上同时做交替基准，再决定是否保留；小扫描按实际 chunk/候选工作量选择 SIMD 宽度，写入优化则保持 WAL 字节格式与恢复分组不变。最终仍只报告本地中位数，不能据此外推正式 E。"
     }
   ],
   "evidence_index": [
@@ -298,12 +366,28 @@
         "/experiments/12/output"
       ],
       "planned_followup": "/conversations/7/planned_followup"
+    },
+    {
+      "topic": "E=3847.994551 之后的性能迭代、拒绝依据与 Prompt 材料修复",
+      "prompt": "/conversations/8/content",
+      "assistant_analysis": "/conversations/9/content",
+      "results": [
+        "/experiments/14/output",
+        "/experiments/15/output",
+        "/experiments/16/output",
+        "/experiments/17/output"
+      ],
+      "retrospective": "/retrospective/7/content",
+      "platform_feedback": "/platform_feedback/1"
     }
   ],
   "limitations": [
     "参赛者的判断形成于已有实验结果之后。更多数据规模、过滤比例及容器资源的对照实验是后续计划。",
     "最新回执对应补充个人复盘前的提交。材料未获得该次逐轮评审报告。",
     "本地 benchmark 记录墙钟时间、WAL 文件大小和单进程 RSS。题面使用专用设备的物理 I/O 和整个容器的峰值内存，正式 E 还依赖平台基线及冻结配置。",
-    "U7 的个人判断对应原单线程实验；T13 是随后由助手运行的独立双线程补测。T13 只验证 32 维静态用例，并对 6c1655a 的过滤缓存命中作了路径确认，结论不扩展到 AVX-512、DESC、大 K、65536 维或写入和回滚后的缓存状态。"
+    "U7 的个人判断对应原单线程实验；T13 是随后由助手运行的独立双线程补测。T13 只验证 32 维静态用例，并对 6c1655a 的过滤缓存命中作了路径确认，结论不扩展到 AVX-512、DESC、大 K、65536 维或写入和回滚后的缓存状态。",
+    "本轮 U8 是参赛者提出的目标与平台反馈；新增性能实验和总结由助手执行，未伪装成参赛者逐字技术判断。参赛者此前的独立假设与取舍见 U6、U7 及个人复盘。",
+    "T18 是 Linux 本地中位数；T19 的 20 个公开用例不等同正式 29 个 MySQL 用例。修复后的正式 E、Agent Prompt 原始分及是否仍显示无效，均需要重新提测，当前材料不承诺具体分值。",
+    "T19 使用 Linux 原生进程运行官方 protocol_check。Windows Docker Desktop 引擎在本轮返回 HTTP 500，未重复实际 Docker 镜像验收；正式提测前仍需重跑 --image 流程。"
   ]
 }

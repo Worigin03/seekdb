@@ -1070,7 +1070,11 @@ void Database::execute(const std::string& sql, ResultSet& rs, const std::string&
     throw;
   }
   if (autoCommit && wal_.size() > walMark) {
-    appendCommitAndSync();
+    if (st.kind == Stmt::INSERT || st.kind == Stmt::UPDATE || st.kind == Stmt::DELETE_) {
+      syncWal();  // appendRecords already included the commit footer
+    } else {
+      appendCommitAndSync();
+    }
     undo_.clear();
   }
   if (timing) {
