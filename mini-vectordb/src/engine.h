@@ -36,6 +36,15 @@ class VecStore {
   }
   int dim() const { return dim_; }
   uint64_t capacityRows() const { return capRows_; }
+  // Per-row 8-bit sketches are only a conservative pruning aid; exact float64
+  // distances are still computed for every row that can enter the result.
+  const uint8_t* sketchBase() const { return sketch_.data(); }
+  const uint8_t* sketchSafe() const { return sketchSafe_.data(); }
+  bool sketchReady(uint64_t rows) const {
+    return sketchEnabled_ && dim_ > 0 && sketchSafe_.size() >= rows &&
+           sketch_.size() >= (size_t)rows * (size_t)dim_;
+  }
+  bool sketchQuery(const float* q, std::vector<uint8_t>& out) const;
 
  private:
   void switchToDisk();
@@ -48,6 +57,9 @@ class VecStore {
   size_t budget_ = 0;
   bool disk_ = false;
   float* mem_ = nullptr;   // owned; grown with realloc (no zero-fill, may extend in place)
+  bool sketchEnabled_ = false;
+  std::vector<uint8_t> sketch_;
+  std::vector<uint8_t> sketchSafe_;
   File file_;
   MappedFile map_;
   uint64_t fileCap_ = 0;

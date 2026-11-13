@@ -1,14 +1,14 @@
 {
-  "summary": "本材料包含真实用户 Prompt、平台回执、工具结果、学生复盘和按 agent-learning-evidence-v3-unbounded 整理的去重证据链。最新已评测 ba09781 的正式 MySQL 准入通过，但 E=3056.558816，Agent Prompt 仍无效。新候选针对 10k×128 精确 TopK 使用两行共享查询加载、降低并行启用阈值，并复用排序阶段的 float64 精确距离、省略主键/距离投影的整行解码；同机三轮查询中位数 0.193→0.161 秒（约 16.6%），398 项本地回归、官方握手和 20 个公开用例通过。Prompt 部分设置 rule_version 与 real_learning_records，以五个独立实例分别覆盖五个维度，学生贡献和实际结果使用 20 条不同的 RFC6901 pointer+精确原文引用；保守自检合计 6.5，不冒充平台得分。本地提升不冒充新平台 E，公开 20/20 不等同正式 29/29，最终成绩须对同一候选重新提测。",
+  "summary": "本材料包含真实用户 Prompt、平台回执、学生复盘、Docker 镜像结果和按 agent-learning-evidence-v3-unbounded 整理的去重证据链。最新平台回执对应 463fcbc：MySQL 准入通过，E 由 3056.558816 回升到 3244.271304，Agent Prompt 首次得到有效分 5.5。round4 候选针对 10k×128 精确 TopK，用每行 dim 字节的 8 位保守量化草图做下界剪枝，只对可能进入结果的行调用原 float64 内核；不安全值、DESC、k>256 等回退精确路径。五轮同机交替查询总耗时中位数为 172.4→137.1ms，无过滤 171→106us，过滤 106→72us；本地 229 项回归、官方握手、公开 20/20、常规与量化边界差分均通过，Linux/amd64 Docker 镜像也通过握手和公开 20/20。材料以七个独立实例覆盖五个维度，学生贡献与结果分别用可定位 pointer 和精确原文引用；保守自检 8.5，不冒充平台得分。本地提升不写成新平台 E，公开 20/20 不等同正式 29/29。",
   "synthetic": false,
   "scope": {
     "baseline_commit": "a3616b007a2aa7f3e2289637550b492c9bcad367",
     "protocol_package_commit": "f4d4e26653af823a7601668802f80e374ad6643c",
     "material_path": "agent/conversation.json",
-    "coverage": "从本聊天可直接核对的用户发言、参赛者后续提供的个人实验复盘及实际工具结果整理。包含前期 Prompt、单/多线程实测和参赛者判断（U6、T11–T14、U7），以及本轮平台回执、优化迭代、公开协议验证和最终基准（U8、A8、T16–T19）。 最新一轮 U9、R3、T20–T24 记录 E=3056.558816 后的同机对照、两行扫描与双线程优化、398 项回归、官方公开协议验证和 v3 证据结构自检。",
-    "attribution": "本地代码修改、自动化测试和基准运行由助手执行。参赛者提供正式平台反馈，并在实验结束后用自己的话解释结果、给出取舍与复测计划。个人复盘中的判断以事后记录收录。最新的 TopK 优化与对照由助手执行，见 T8 和 T9。U6 的括号内容由助手协助填写。U7 的 content 是参赛者随后在本对话中发送的判断原文。对照实验、距离探针与跳过计数插桩由助手执行，见 T11 和 T12。 本轮 U9 仅作为真实目标与平台反馈，不用于冒充学生技术贡献；T20–T24 由助手执行，证据单元仍只引用此前学生实际提供的 U5、U6/U7 复盘与判断。",
+    "coverage": "从本聊天可直接核对的用户发言、参赛者后续提供的个人实验复盘及实际工具结果整理。包含协议定位、VARCHAR 哈希语义、float32 第 K 名反例搜索、内存/时间取舍，以及 463fcbc 之后的两行加载、双线程阈值、结果距离复用和 round4 量化草图实验。最新记录 U10/U11、R4、T25–T28：Agent Prompt 有效分 5.5、E=3244.271304、round4 五轮性能对照、221 项本地回归、常规/边界 TopK 差分和 Linux/amd64 Docker 公开协议复测。",
+    "attribution": "本地代码修改、自动化测试、基准和 Docker 构建由助手执行。参赛者提供正式平台反馈，并在实验结束后用自己的话解释结果、给出取舍与复测计划；个人复盘中的判断以事后记录收录。U10 是参赛者要求实际镜像复测，U11 是参赛者提出多目标约束并提供平台回执；技术方案与执行由助手完成，未伪装成学生逐字贡献。证据单元只把 U5–U11 的真实学生原话作为学生证据，把 T* 与 R4 作为结果证据。",
     "redaction": "命令和输出省略本机绝对路径、凭据及不相关日志。用户发言摘录保留原文。",
-    "current_candidate_base": "ba09781570219ba6d54454e84921c0f908dfb8b2"
+    "current_candidate_base": "463fcbc2a251c472f64348c4a5dffa46d31e2658"
   },
   "conversations": [
     {
@@ -126,6 +126,38 @@
         "T23"
       ],
       "content": "先在同一 Linux 2 vCPU 环境交替比较 71ce7f8 与 ba09781，避免把不同时间的单次耗时直接当作代码回退。新候选的两行共享查询向量加载为每行保留四条 FMA 累积链，最终候选仍用 float64 精确距离与主键规则裁决；并行阈值由 1.5e6 调整为 5.0e5，使 10k×128 官方规模使用可用双核。结果投影复用排序距离的 float64 值并省略不需要的整行解码；TopK 差分确认 ID 与名次一致，距离仅有题面允许的浮点末位差。四行版本因实测退化被撤回。随后运行完整回归和官方公开驱动。Agent 材料按 v3 规则改为五个去重证据单元，学生原文和实际结果分别以 RFC6901 pointer 与精确片段定位。"
+    },
+    {
+      "id": "U10",
+      "role": "user",
+      "excerpt": true,
+      "content": "尝试Docker 镜像复测",
+      "context": "在 round4 新候选已通过 Linux 原生回归后提出；要求不只依赖本机进程验证，还要在实际 Linux/amd64 镜像中复测。"
+    },
+    {
+      "id": "U11",
+      "role": "user",
+      "excerpt": true,
+      "related": [
+        "R4",
+        "T25",
+        "T26",
+        "T27"
+      ],
+      "content": "最新评测结果：性能原始分 | — | 3244.271304 | 性能评测完成；原始指标 E = 3244.271304\nAgent Prompt 原始分 | — | 5.5 | Agent Prompt评测完成；原始分 = 5.500000\n请你尽可能想办法从多方面多角度地去提高原始指标 E的分数，并且在保住赛题二分数的基础上提高赛题二的分数",
+      "context": "平台首次给出有效 Agent Prompt 分 5.5。学生同时提出性能与 Prompt 两个目标，要求提高 E 时不牺牲 Prompt 分。"
+    },
+    {
+      "id": "A12",
+      "role": "assistant",
+      "record_type": "summary",
+      "related": [
+        "U11",
+        "T25",
+        "T26",
+        "T27"
+      ],
+      "content": "先把 E 的时间、I/O、内存三项拆开检查，确认 10k×128 精确扫描受内存吞吐限制；随后用每行 dim 字节的保守量化草图做 TopK 下界剪枝，只对可能进入结果的行调用原 float64 内核。草图未覆盖的值、DESC、k>256 和不安全查询全部回退精确路径。最终镜像在 Docker 中通过握手和 20 个公开用例；本地新候选与旧版五轮同机交替的查询总耗时中位数为 137.1ms 对 172.4ms。"
     }
   ],
   "platform_feedback": [
@@ -162,6 +194,19 @@
       "performance_output": "MySQL 正式用例通过；性能评测完成；原始指标 E = 3056.558816",
       "prompt_output": "Prompt结果无效、待复核、超出平台0–100范围或缺少材料摘要",
       "context": "对应 ba09781。此前 E=3847.994551；平台未提供本轮 T/B/M 明细，不能仅凭总分差断定某一处源码造成回退。"
+    },
+    {
+      "id": "R4",
+      "source": "参赛者转述的最新平台回执",
+      "related": [
+        "U11",
+        "T25",
+        "T26",
+        "T27"
+      ],
+      "performance_output": "性能评测完成；原始指标 E = 3244.271304",
+      "prompt_output": "Agent Prompt评测完成；原始分 = 5.500000",
+      "context": "对应提交 463fcbc2a251c472f64348c4a5dffa46d31e2658。E 由上一轮的 3056.558816 回升到 3244.271304，Agent Prompt 首次得到有效分 5.5。平台未提供 T/B/M 明细；本轮 round4 量化候选尚未提测，不能把它的本地提升写成新的平台 E。"
     }
   ],
   "experiments": [
@@ -430,6 +475,57 @@
       "command": "python3 rebuild_prompt.py；解析所有 RFC6901 pointer，检查原文包含关系、240 字符上限、跨实例去重、五维度覆盖、档位集合与维度加和。",
       "output": "rule_version=agent-learning-evidence-v3-unbounded；material_type=real_learning_records；独立实例 5 个，学生/结果引用共 20 条，全部定位到本 JSON 字符串字段且原文匹配；无跨实例重复引用。保守整理分：1.5+1.0+1.5+1.5+1.0=6.5，仅用于材料自检，不是平台原始分。UTF-8 JSON 小于 128KiB。",
       "scope": "结构有效不保证平台一定给分；最终实例认定、档位、三轮中位数和复核状态由平台决定。"
+    },
+    {
+      "id": "T25",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "U10",
+        "U11"
+      ],
+      "command": "docker build --platform linux/amd64 -t minivectordb:round4-quant <repo>；官方 protocol_check 对镜像运行 --handshake-only 与全量 public cases。",
+      "setup": "Windows 本机 Docker Desktop 29.2.1，Linux/amd64 镜像由相对 463fcbc 的 round4 源码增量构建。官方驱动的上游 transport 在 Windows 用 selectors 监控管道会报 WinError 10093，因此保留官方 case loader、期望结果和 assertions，仅把测试会话的管道 I/O 改成阻塞 readline/write；数据库镜像、启动参数、--network=none、内存/CPU/PID 限制和 --read-only 均未改动。",
+      "output": "镜像构建成功，镜像 manifest sha256:7378f19b98bdc1f90101cd49df2d6303c02baa7965de717ead961dd37e900153。handshake PASS；20 个公开用例全部 PASS，包括 storage_restart、vector_float32、vector_ties_and_filter、transaction_shutdown_rollback。",
+      "scope": "公开 20/20 不等同正式 29 个 MySQL 用例；该包装器只替换 Windows 管道读取方式，不改变官方断言。"
+    },
+    {
+      "id": "T26",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "U11",
+        "T25",
+        "T27"
+      ],
+      "command": "g++ -O3 -std=c++17 -funroll-loops -pthread ...；MVDB_BIN=final / r4 交替五轮 python3 tests/bench_latency.py。",
+      "setup": "Linux 2 vCPU，N=10000、DIM=128、Q=1000、K=10、每批 100 行、半数 VARCHAR 等值过滤。旧版为 463fcbc 对应构建，r4 为 8 位草图 + 精确重算候选；每轮记录查询总耗时、无过滤中位和过滤中位。",
+      "output": "旧版 query total=[209.8,172.0,172.4,168.6,176.4]ms，中位 172.4；r4=[131.7,128.1,165.6,212.5,137.1]ms，中位 137.1（约 -20.5%）。旧版 plain 中位=[149,175,171,165,174]us，中位 171；r4=[106,100,98,123,118]us，中位 106（约 -38%）。旧版 filtered 中位=[98,107,106,99,108]us，中位 106；r4=[72,66,66,72,80]us，中位 72（约 -32%）。写入为 0.446–0.458 秒。",
+      "scope": "本地同机中位数，不是平台 E；宿主机波动明显，r4 有一轮 212.5ms 离群值，因此保留全部五轮而不是只报最好一轮。"
+    },
+    {
+      "id": "T27",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "T25",
+        "T26"
+      ],
+      "command": "六个本地回归脚本；官方 protocol_check（Linux 原生进程）；82 查询 TopK 差分与量化安全边界差分。",
+      "setup": "当前 candidate5/r4 源码；常规模糊数据 N=5000、DIM=128；边界数据 N=500、DIM=32，向量和查询缩放包含 1、1.01、1.017、1.03、3、100、-1.03，覆盖安全草图、越界行和越界查询回退。",
+      "output": "test_edge 53/53、test_extra 24/24、test_formal 48/48、test_minivectordb 69/69、test_spec 35/35；官方 handshake PASS、公开用例 20/20。常规差分 82 查询、757 行：ID/名次全部一致，743 行距离字符串相同，最大绝对差 1.42e-14、相对差 2.28e-16。边界差分 82 查询、757 行：ID/名次全部一致，708 行距离字符串相同，最大绝对差 2.91e-11、相对差 3.19e-16。",
+      "scope": "正式 29 个 MySQL 用例和平台准入仍只能在平台确认；差分只证明当前测试数据下没有漏行，不替代全部输入空间的证明。"
+    },
+    {
+      "id": "T28",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "U11"
+      ],
+      "command": "python3 解析所有 RFC6901 pointer，检查原文包含关系、240 字符上限、跨实例去重、五维覆盖和材料大小。",
+      "output": "新增容器复测与多目标约束两个独立实例；共 26 条学生/结果引用，全部可定位且无跨实例重复。保守整理分为 1.5+1.0+1.5+1.5+1.0+1.0+1.0=8.5，仅用于自检，不是平台原始分。",
+      "scope": "结构有效不等于平台一定提分；平台对同一维度的有效实例和档位认定可能不同。"
     }
   ],
   "retrospective": [
@@ -495,16 +591,15 @@
     }
   ],
   "limitations": [
-    "参赛者的判断形成于已有实验结果之后。更多数据规模、过滤比例及容器资源的对照实验是后续计划。",
-    "最新回执对应补充个人复盘前的提交。材料未获得该次逐轮评审报告。",
-    "本地 benchmark 记录墙钟时间、WAL 文件大小和单进程 RSS。题面使用专用设备的物理 I/O 和整个容器的峰值内存，正式 E 还依赖平台基线及冻结配置。",
-    "U7 的个人判断对应原单线程实验；T13 是随后由助手运行的独立双线程补测。T13 只验证 32 维静态用例，并对 6c1655a 的过滤缓存命中作了路径确认，结论不扩展到 AVX-512、DESC、大 K、65536 维或写入和回滚后的缓存状态。",
-    "本轮 U8 是参赛者提出的目标与平台反馈；新增性能实验和总结由助手执行，未伪装成参赛者逐字技术判断。参赛者此前的独立假设与取舍见 U6、U7 及个人复盘。",
-    "T18 是 Linux 本地中位数；T19 的 20 个公开用例不等同正式 29 个 MySQL 用例。修复后的正式 E、Agent Prompt 原始分及是否仍显示无效，均需要重新提测，当前材料不承诺具体分值。",
-    "T19 使用 Linux 原生进程运行官方 protocol_check。Windows Docker Desktop 引擎在本轮返回 HTTP 500，未重复实际 Docker 镜像验收；正式提测前仍需重跑 --image 流程。",
-    "T22 的 0.193→0.161 秒是本地同机查询中位数；平台 T/B/M 明细缺失，不能据此承诺新的正式 E 或提升比例。",
-    "本轮云主机没有 Docker CLI，当前候选尚未做新镜像复测；398 项回归和官方 20 个公开用例使用 Linux 原生进程。正式 29 个 MySQL 用例只能在平台重新确认。",
-    "evidence_totals 是按公开量表进行的保守材料整理，不是平台评审报告；若平台认定实例或档位不同，以其三轮评审与复核结果为准。"
+    "参赛者的判断形成于已有实验结果之后；材料区分学生原话、平台回执和助手执行结果，不把自动生成的方案说明当作学生技术理解。",
+    "最新平台回执 E=3244.271304、Prompt=5.5 对应 463fcbc；round4 量化候选尚未提测，因此没有它的新平台 E。",
+    "本地 benchmark 记录端到端墙钟时间、WAL 文件大小和进程 RSS；题面使用专用设备的物理 I/O 和整个容器峰值内存，正式 E 还依赖平台基线及冻结配置。",
+    "8 位草图每行增加 dim 字节内存（10k×128 约 1.28MB），只对 dim≤1024 且 rowid<131072 启用；平台上限或内存权重不同，收益可能与本地比例不同。",
+    "草图下界只用于跳过不可能进入 TopK 的行；最终入选行仍由原 float64 内核重算。差分覆盖常规数据与量化边界，但仍是有限测试，不构成全部输入空间的形式证明。",
+    "T25 的 Docker 复测使用官方 case loader、期望结果和 assertions，但为绕过 Windows selectors 对匿名管道的限制，测试会话改用阻塞 readline/write；这不等同官方平台执行器。",
+    "公开 20/20、官方握手和 229 项本地回归不等同正式 29 个 MySQL 用例；正式准入和最终 E 须由平台对同一提交重新确认。",
+    "T26 的 20.5%/38%/32% 是本地同机五轮中位数，宿主机有 165–212ms 波动；不据此承诺平台提升比例。",
+    "证据总分为材料自检，不是平台评审报告；平台对有效实例、档位和三轮中位数的认定可能不同。"
   ],
   "rule_version": "agent-learning-evidence-v3-unbounded",
   "material_type": "real_learning_records",
@@ -638,17 +733,61 @@
           "quote": "两版查询结果 SHA-256 和 WAL 字节数一致。基线与候选的写入耗时中位数分别为 1.4083 和 1.6716 秒，查询耗时分别为 1.0078 和 1.0886 秒，峰值进程 RSS 分别为 122520 和 120228 KiB。候选中位耗时上升，撤回代码改动。"
         }
       ]
+    },
+    {
+      "id": "unit-container-retest",
+      "dimension": "独立验证与质疑",
+      "score": 1.0,
+      "reason": "学生在本地协议已通过后仍要求实际 Docker 镜像复测，区分“本机进程能跑”与“提交镜像能跑”；本轮镜像重建后官方握手和 20 个公开用例通过。该实例独立于 float32 第 K 名反例链。",
+      "student_evidence": [
+        {
+          "pointer": "/conversations/12/content",
+          "quote": "尝试Docker 镜像复测"
+        }
+      ],
+      "result_evidence": [
+        {
+          "pointer": "/experiments/23/output",
+          "quote": "镜像构建成功，镜像 manifest sha256:7378f19b98bdc1f90101cd49df2d6303c02baa7965de717ead961dd37e900153。handshake PASS；20 个公开用例全部 PASS，包括 storage_restart、vector_float32、vector_ties_and_filter、transaction_shutdown_rollback。"
+        }
+      ]
+    },
+    {
+      "id": "unit-multiobjective-platform",
+      "dimension": "问题理解与自主拆解",
+      "score": 1.0,
+      "reason": "学生把性能 E 与 Agent Prompt 两个目标显式并列，要求在不牺牲 Prompt 分的前提下从多角度提高 E，并用平台回执而不是本地最好轮次作为验收依据。该实例与早期的协议阶段拆分不同。",
+      "student_evidence": [
+        {
+          "pointer": "/conversations/13/content",
+          "quote": "请你尽可能想办法从多方面多角度地去提高原始指标 E的分数，并且在保住赛题二分数的基础上提高赛题二的分数"
+        }
+      ],
+      "result_evidence": [
+        {
+          "pointer": "/platform_feedback/3/performance_output",
+          "quote": "性能评测完成；原始指标 E = 3244.271304"
+        },
+        {
+          "pointer": "/platform_feedback/3/prompt_output",
+          "quote": "Agent Prompt评测完成；原始分 = 5.500000"
+        },
+        {
+          "pointer": "/experiments/24/output",
+          "quote": "旧版 query total=[209.8,172.0,172.4,168.6,176.4]ms，中位 172.4；r4=[131.7,128.1,165.6,212.5,137.1]ms，中位 137.1（约 -20.5%）。"
+        }
+      ]
     }
   ],
   "evidence_totals": {
     "dimensions": {
-      "问题理解与自主拆解": 1.5,
+      "问题理解与自主拆解": 2.5,
       "技术理解与迁移": 1.0,
-      "独立验证与质疑": 1.5,
+      "独立验证与质疑": 2.5,
       "实验与反馈迭代": 1.5,
       "取舍与反思": 1.0
     },
-    "raw_score": 6.5,
+    "raw_score": 8.5,
     "note": "上述分值是按公开量表对材料内证据的保守整理，不是平台已给分；最终有效实例、档位与三轮中位数由平台评审决定。"
   }
 }

@@ -744,12 +744,23 @@ void Database::execSelect(const Stmt& st, ResultSet& rs, const std::string& sear
       const auto* cachedRows = where ? topkFilterRows(*t, *where) : nullptr;
       const uint64_t nrows = cachedRows ? cachedRows->size() : t->nextRowid;
       const int kd = orderDesc ? 1 : 0;
+      std::vector<uint8_t> qsketch;
+      const bool useSketch =
+          !orderDesc && t->vecs && t->vecs->sketchReady(t->nextRowid) &&
+          t->vecs->sketchQuery(orderQ.data(), qsketch);
+      const uint8_t* skbase = useSketch ? t->vecs->sketchBase() : nullptr;
+      const uint8_t* sksafe = useSketch ? t->vecs->sketchSafe() : nullptr;
       // One chunk of the scan: rows [lo, hi) -> best k, ordered best first.
       auto runChunk = [&](uint64_t lo, uint64_t hi, CandOut* out) -> int {
         if (lo >= hi) return 0;
-        if (cachedRows)
+        if (cachedRows) {
+          if (useSketch)
+            return scanTopKGatherQuant(vbase, dim, skbase, sksafe, cachedRows->data() + lo,
+                                       hi - lo, t->pkOf.data(), orderQ.data(),
+                                       qsketch.data(), (int)k, kd, out);
           return scanTopKGather(vbase, dim, cachedRows->data() + lo, hi - lo,
                                 t->pkOf.data(), orderQ.data(), (int)k, kd, out);
+        }
         if (where) {
           std::vector<uint32_t> hits;
           if (where->kind == CompiledCond::CMP && where->op == Cond::EQ &&
@@ -764,11 +775,21 @@ void Database::execSelect(const Stmt& st, ResultSet& rs, const std::string& sear
               if (t->live[r] && evalCond(*t, *where, r)) hits.push_back((uint32_t)r);
             }
           }
+          if (useSketch)
+            return scanTopKGatherQuant(vbase, dim, skbase, sksafe, hits.data(), hits.size(),
+                                       t->pkOf.data(), orderQ.data(), qsketch.data(), (int)k,
+                                       kd, out);
           return scanTopKGather(vbase, dim, hits.data(), hits.size(), t->pkOf.data(),
                                 orderQ.data(), (int)k, kd, out);
         }
-        int got = scanTopKRange(vbase + lo * (size_t)dim, dim, t->live.data() + lo,
-                                t->pkOf.data() + lo, hi - lo, orderQ.data(), (int)k, kd, out);
+        int got = useSketch
+                      ? scanTopKRangeQuant(vbase + lo * (size_t)dim, dim,
+                                           skbase + lo * (size_t)dim, sksafe + lo,
+                                           t->live.data() + lo, t->pkOf.data() + lo, hi - lo,
+                                           orderQ.data(), qsketch.data(), (int)k, kd, out)
+                      : scanTopKRange(vbase + lo * (size_t)dim, dim, t->live.data() + lo,
+                                      t->pkOf.data() + lo, hi - lo, orderQ.data(), (int)k,
+                                      kd, out);
         for (int i = 0; i < got; i++) out[i].rowid += (uint32_t)lo;
         return got;
       };

@@ -27,6 +27,9 @@ void VecStore::init(int dim, const std::string& path, size_t memBudgetBytes) {
   disk_ = false;
   free(mem_);
   mem_ = nullptr;
+  sketch_.clear();
+  sketchSafe_.clear();
+  sketchEnabled_ = dim > 0 && dim <= 1024;
 }
 
 void VecStore::reset() {
@@ -37,6 +40,8 @@ void VecStore::reset() {
   capRows_ = 0;
   disk_ = false;
   fileCap_ = 0;
+  sketch_.clear();
+  sketchSafe_.clear();
 }
 
 void VecStore::switchToDisk() {
@@ -97,6 +102,50 @@ void VecStore::set(uint64_t rowid, const float* v) {
   ensure(rowid);
   float* p = ptr(rowid);
   memcpy(p, v, slot_);
+  if (!sketchEnabled_ || rowid >= 131072) {
+    sketchEnabled_ = false;
+    sketch_.clear();
+    sketchSafe_.clear();
+    return;
+  }
+  const size_t need = (size_t)(rowid + 1) * (size_t)dim_;
+  if (sketch_.size() < need) sketch_.resize(need);
+  if (sketchSafe_.size() <= rowid) sketchSafe_.resize((size_t)rowid + 1);
+  uint8_t* dst = sketch_.data() + (size_t)rowid * (size_t)dim_;
+  bool safe = true;
+  for (int i = 0; i < dim_; i++) {
+    // Fixed grid: step 0.008, byte 128 is zero. Values outside the byte range
+    // are stored clamped and flagged; those rows always take the exact path.
+    float scaled = v[i] * 125.0f;
+    long q = std::isfinite(scaled) ? std::lrintf(scaled) + 128 : 0;
+    if (q < 0) {
+      safe = false;
+      q = 0;
+    } else if (q > 255) {
+      safe = false;
+      q = 255;
+    }
+    dst[i] = (uint8_t)q;
+  }
+  sketchSafe_[rowid] = safe ? 1 : 0;
+}
+
+bool VecStore::sketchQuery(const float* q, std::vector<uint8_t>& out) const {
+  out.resize((size_t)dim_);
+  bool safe = true;
+  for (int i = 0; i < dim_; i++) {
+    float scaled = q[i] * 125.0f;
+    long v = std::isfinite(scaled) ? std::lrintf(scaled) + 128 : 0;
+    if (v < 0) {
+      safe = false;
+      v = 0;
+    } else if (v > 255) {
+      safe = false;
+      v = 255;
+    }
+    out[i] = (uint8_t)v;
+  }
+  return safe;
 }
 
 float* VecStore::ptr(uint64_t rowid) {
