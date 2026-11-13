@@ -777,7 +777,7 @@ void Database::execSelect(const Stmt& st, ResultSet& rs, const std::string& sear
       // worker keeps its own top-k and the caller merges them, so the result
       // set is identical to the single-threaded scan.
       double work = (double)t->nextRowid * (double)std::max(dim, 1);
-      static const double parMin = getenv("MVDB_PAR_MIN") ? atof(getenv("MVDB_PAR_MIN")) : 1.5e6;
+      static const double parMin = getenv("MVDB_PAR_MIN") ? atof(getenv("MVDB_PAR_MIN")) : 5.0e5;
       int threads = 1;
       if (work >= parMin && k <= 256) {
         threads = ThreadPool::get().size();
@@ -816,19 +816,30 @@ void Database::execSelect(const Stmt& st, ResultSet& rs, const std::string& sear
     if ((int64_t)results.size() > k) results.resize((size_t)k);
     size_t skip = (size_t)std::min<int64_t>(off, (int64_t)results.size());
     int64_t emitted = 0;
+    std::vector<bool> reuseOrderDist(items.size(), false);
+    bool needRow = false;
+    for (size_t i = 0; i < items.size(); i++) {
+      const auto& it = items[i];
+      if (it.dist && searchMode != "ann" && it.distCol == orderDistCol && it.q == orderQ)
+        reuseOrderDist[i] = true;
+      if (!it.dist && !it.isConst && it.col != sc.pk) needRow = true;
+    }
     std::vector<Value> row;
     for (size_t ri = skip; ri < results.size(); ri++) {
       if (emitted++ >= lim) break;
       const Cand& c = results[ri];
-      decodeRowAt(*t, c.rowid, row);
+      if (needRow) decodeRowAt(*t, c.rowid, row);
       std::vector<ResultCell> out;
       out.reserve(items.size());
-      for (auto& it : items) {
+      for (size_t i = 0; i < items.size(); i++) {
+        const auto& it = items[i];
         if (it.dist) {
-          double d2 = distOf(c.rowid, it.q);
+          double d2 = reuseOrderDist[i] ? c.d : distOf(c.rowid, it.q);
           out.emplace_back(it.squared ? d2 : std::sqrt(d2));
         } else if (it.isConst) {
           out.push_back(resultCell(it.cval));
+        } else if (it.col == sc.pk) {
+          out.emplace_back(c.pk);
         } else {
           out.push_back(resultCell(row[it.col]));
         }

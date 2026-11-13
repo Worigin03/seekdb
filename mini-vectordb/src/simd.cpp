@@ -87,6 +87,62 @@ __attribute__((target("avx2,fma"))) static inline float l2sqAvx2(const float* __
   return s;
 }
 
+__attribute__((target("avx2"))) static inline float hsumAvx2Four(
+    __m256 s0, __m256 s1, __m256 s2, __m256 s3) {
+  __m256 s = _mm256_add_ps(_mm256_add_ps(s0, s1), _mm256_add_ps(s2, s3));
+  __m128 lo = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1));
+  lo = _mm_hadd_ps(lo, lo);
+  lo = _mm_hadd_ps(lo, lo);
+  return _mm_cvtss_f32(lo);
+}
+
+// Two rows share every query-vector load while retaining four FMA chains per row.
+__attribute__((target("avx2,fma"))) static inline void l2sqAvx2x2(
+    const float* __restrict q, const float* __restrict a, const float* __restrict b,
+    int dim, float* __restrict out) {
+  __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
+  __m256 a2 = _mm256_setzero_ps(), a3 = _mm256_setzero_ps();
+  __m256 b0 = _mm256_setzero_ps(), b1 = _mm256_setzero_ps();
+  __m256 b2 = _mm256_setzero_ps(), b3 = _mm256_setzero_ps();
+  int i = 0;
+  for (; i + 32 <= dim; i += 32) {
+    __m256 qv = _mm256_loadu_ps(q + i);
+    __m256 xa = _mm256_sub_ps(_mm256_loadu_ps(a + i), qv);
+    __m256 xb = _mm256_sub_ps(_mm256_loadu_ps(b + i), qv);
+    a0 = _mm256_fmadd_ps(xa, xa, a0);
+    b0 = _mm256_fmadd_ps(xb, xb, b0);
+    qv = _mm256_loadu_ps(q + i + 8);
+    xa = _mm256_sub_ps(_mm256_loadu_ps(a + i + 8), qv);
+    xb = _mm256_sub_ps(_mm256_loadu_ps(b + i + 8), qv);
+    a1 = _mm256_fmadd_ps(xa, xa, a1);
+    b1 = _mm256_fmadd_ps(xb, xb, b1);
+    qv = _mm256_loadu_ps(q + i + 16);
+    xa = _mm256_sub_ps(_mm256_loadu_ps(a + i + 16), qv);
+    xb = _mm256_sub_ps(_mm256_loadu_ps(b + i + 16), qv);
+    a2 = _mm256_fmadd_ps(xa, xa, a2);
+    b2 = _mm256_fmadd_ps(xb, xb, b2);
+    qv = _mm256_loadu_ps(q + i + 24);
+    xa = _mm256_sub_ps(_mm256_loadu_ps(a + i + 24), qv);
+    xb = _mm256_sub_ps(_mm256_loadu_ps(b + i + 24), qv);
+    a3 = _mm256_fmadd_ps(xa, xa, a3);
+    b3 = _mm256_fmadd_ps(xb, xb, b3);
+  }
+  for (; i + 8 <= dim; i += 8) {
+    __m256 qv = _mm256_loadu_ps(q + i);
+    __m256 xa = _mm256_sub_ps(_mm256_loadu_ps(a + i), qv);
+    __m256 xb = _mm256_sub_ps(_mm256_loadu_ps(b + i), qv);
+    a0 = _mm256_fmadd_ps(xa, xa, a0);
+    b0 = _mm256_fmadd_ps(xb, xb, b0);
+  }
+  out[0] = hsumAvx2Four(a0, a1, a2, a3);
+  out[1] = hsumAvx2Four(b0, b1, b2, b3);
+  for (; i < dim; i++) {
+    float xa = a[i] - q[i], xb = b[i] - q[i];
+    out[0] += xa * xa;
+    out[1] += xb * xb;
+  }
+}
+
 __attribute__((target("avx512f,fma"))) static float l2sqAvx512(
     const float* a, const float* b, int d) {
   __m512 s0 = _mm512_setzero_ps(), s1 = s0, s2 = s0, s3 = s0;
@@ -277,6 +333,69 @@ __attribute__((target("avx2"))) static int scanGatherAvx2(const float* base, int
   }
   MVDB_SCAN_GATHER_BODY(addBounded<l2sqAvx2>)
 }
+
+__attribute__((target("avx2,fma"))) static inline void addEstimated(
+    TopK& top, const float* row, const float* query, int dim, int64_t pk, uint32_t rowid,
+    float estimate, double margin, double underflow) {
+  const double cutoff = top.best[top.k - 1].d;
+  if (estimate <= FLT_MAX && estimate > cutoff * (1.0 + margin) + underflow) return;
+  top.add(l2sqExactAvx2(row, query, dim), pk, rowid);
+}
+
+__attribute__((target("avx2,fma"))) static int scanRangePaired(
+    const float* base, int dim, const uint8_t* live, const int64_t* pks, uint64_t n,
+    const float* q, int k, int desc, CandOut* out) {
+  if (k <= 0) return 0;
+  TopK tk{out, 0, k, desc};
+  const size_t stride = (size_t)dim;
+  const double margin = 8.0 * (dim + 4) * FLT_EPSILON;
+  const double underflow = 16.0 * (dim + 4) * FLT_MIN;
+  uint64_t r = 0;
+  while (r < n) {
+    if (tk.nb == tk.k && r + 2 <= n && live[r] && live[r + 1]) {
+      if (r + 16 < n) __builtin_prefetch(base + (size_t)(r + 16) * stride);
+      const float* row = base + (size_t)r * stride;
+      float est[2];
+      l2sqAvx2x2(q, row, row + stride, dim, est);
+      for (int j = 0; j < 2; j++)
+        addEstimated(tk, row + (size_t)j * stride, q, dim, pks[r + j], (uint32_t)(r + j),
+                     est[j], margin, underflow);
+      r += 2;
+    } else {
+      if (live[r]) addBounded<l2sqAvx2>(tk, base + (size_t)r * stride, q, dim, pks[r], (uint32_t)r);
+      r++;
+    }
+  }
+  return tk.nb;
+}
+
+__attribute__((target("avx2,fma"))) static int scanGatherPaired(
+    const float* base, int dim, const uint32_t* rowids, size_t count, const int64_t* pks,
+    const float* q, int k, int desc, CandOut* out) {
+  if (k <= 0) return 0;
+  TopK tk{out, 0, k, desc};
+  const size_t stride = (size_t)dim;
+  const double margin = 8.0 * (dim + 4) * FLT_EPSILON;
+  const double underflow = 16.0 * (dim + 4) * FLT_MIN;
+  size_t i = 0;
+  while (i < count) {
+    if (tk.nb == tk.k && i + 2 <= count) {
+      if (i + 16 < count) __builtin_prefetch(base + (size_t)rowids[i + 16] * stride);
+      const float* r0 = base + (size_t)rowids[i] * stride;
+      const float* r1 = base + (size_t)rowids[i + 1] * stride;
+      float est[2];
+      l2sqAvx2x2(q, r0, r1, dim, est);
+      addEstimated(tk, r0, q, dim, pks[rowids[i]], rowids[i], est[0], margin, underflow);
+      addEstimated(tk, r1, q, dim, pks[rowids[i + 1]], rowids[i + 1], est[1], margin, underflow);
+      i += 2;
+    } else {
+      uint32_t rowid = rowids[i];
+      addBounded<l2sqAvx2>(tk, base + (size_t)rowid * stride, q, dim, pks[rowid], rowid);
+      i++;
+    }
+  }
+  return tk.nb;
+}
 #endif
 
 }  // namespace
@@ -284,6 +403,8 @@ __attribute__((target("avx2"))) static int scanGatherAvx2(const float* base, int
 int scanTopKRange(const float* base, int dim, const uint8_t* live, const int64_t* pks,
                   uint64_t n, const float* q, int k, int desc, CandOut* out) {
 #if MVDB_X86
+  if (g_useAvx2 && !desc && dim >= 32 && (dim & 7) == 0 && (double)n * dim <= 1.5e6)
+    return scanRangePaired(base, dim, live, pks, n, q, k, desc, out);
   if (g_useAvx2) return scanRangeAvx2(base, dim, live, pks, n, q, k, desc, out);
 #endif
   return scanRangeScalar(base, dim, live, pks, n, q, k, desc, out);
@@ -292,6 +413,8 @@ int scanTopKRange(const float* base, int dim, const uint8_t* live, const int64_t
 int scanTopKGather(const float* base, int dim, const uint32_t* rowids, size_t count,
                    const int64_t* pks, const float* q, int k, int desc, CandOut* out) {
 #if MVDB_X86
+  if (g_useAvx2 && !desc && dim >= 32 && (dim & 7) == 0 && (double)count * dim <= 1.5e6)
+    return scanGatherPaired(base, dim, rowids, count, pks, q, k, desc, out);
   if (g_useAvx2) return scanGatherAvx2(base, dim, rowids, count, pks, q, k, desc, out);
 #endif
   return scanGatherScalar(base, dim, rowids, count, pks, q, k, desc, out);
