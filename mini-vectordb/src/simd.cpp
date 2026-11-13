@@ -175,6 +175,7 @@ static bool g_useAvx2 = false;
 #if MVDB_X86
 static bool g_useAvx512 = false;
 static bool g_useAvx512bw = false;
+static bool g_useAvx512vnni = false;
 #endif
 static bool g_init = false;
 
@@ -186,6 +187,11 @@ void initSimd() {
   g_useAvx512 = g_useAvx2 && __builtin_cpu_supports("avx512f");
   g_useAvx512bw = g_useAvx512 && __builtin_cpu_supports("avx512bw") &&
                   __builtin_cpu_supports("avx512dq");
+#ifdef MVDB_NO_AVX512VNNI
+  g_useAvx512vnni = false;
+#else
+  g_useAvx512vnni = g_useAvx512bw && __builtin_cpu_supports("avx512vnni");
+#endif
 #endif
 }
 
@@ -592,6 +598,367 @@ __attribute__((target("avx512f,avx512bw,avx512dq,fma"))) static int scanGatherQu
   }
   return tk.nb;
 }
+
+// ---- 8-bit dot-product bound -------------------------------------------------
+//
+// A row byte s is the signed quantized coordinate x ~= s*step, and a query
+// byte a is round(q/step)+128.  The exact dot product Dq = sum(q*x) is
+// approximated by step^2*(sum(a*s) - 128*sum(s)).  For a safe row and a safe
+// query every coordinate is within half a step, so the dot approximation error
+// is at most step^2/2*(sum|s| + sum|a-128|) + step^2*dim/4.  Combining this
+// with the exactly stored row/query squared norms gives a lower bound on L2^2.
+// VNNI evaluates eight unsigned-byte-query * signed-byte-row dots in parallel.
+__attribute__((target("avx512f,avx512bw,avx512vnni"))) static inline int qdot1_512(
+    const uint8_t* __restrict q, const int8_t* __restrict x, int dim) {
+  __m512i s = _mm512_setzero_si512();
+  int i = 0;
+  for (; i + 64 <= dim; i += 64) {
+    s = _mm512_dpbusd_epi32(s, _mm512_loadu_si512((const void*)(q + i)),
+                            _mm512_loadu_si512((const void*)(x + i)));
+  }
+  int r = _mm512_reduce_add_epi32(s);
+  for (; i < dim; i++) r += (int)q[i] * (int)x[i];
+  return r;
+}
+
+__attribute__((target("avx512f,avx512bw,avx512vnni"))) static inline void qdot8_512(
+    const uint8_t* __restrict q, const int8_t* const rows[8], int dim, int* out) {
+  __m512i s0 = _mm512_setzero_si512(), s1 = s0, s2 = s0, s3 = s0;
+  __m512i s4 = s0, s5 = s0, s6 = s0, s7 = s0;
+  int i = 0;
+  for (; i + 64 <= dim; i += 64) {
+    __m512i qv = _mm512_loadu_si512((const void*)(q + i));
+    s0 = _mm512_dpbusd_epi32(s0, qv, _mm512_loadu_si512((const void*)(rows[0] + i)));
+    s1 = _mm512_dpbusd_epi32(s1, qv, _mm512_loadu_si512((const void*)(rows[1] + i)));
+    s2 = _mm512_dpbusd_epi32(s2, qv, _mm512_loadu_si512((const void*)(rows[2] + i)));
+    s3 = _mm512_dpbusd_epi32(s3, qv, _mm512_loadu_si512((const void*)(rows[3] + i)));
+    s4 = _mm512_dpbusd_epi32(s4, qv, _mm512_loadu_si512((const void*)(rows[4] + i)));
+    s5 = _mm512_dpbusd_epi32(s5, qv, _mm512_loadu_si512((const void*)(rows[5] + i)));
+    s6 = _mm512_dpbusd_epi32(s6, qv, _mm512_loadu_si512((const void*)(rows[6] + i)));
+    s7 = _mm512_dpbusd_epi32(s7, qv, _mm512_loadu_si512((const void*)(rows[7] + i)));
+  }
+  int r[8] = {_mm512_reduce_add_epi32(s0), _mm512_reduce_add_epi32(s1),
+              _mm512_reduce_add_epi32(s2), _mm512_reduce_add_epi32(s3),
+              _mm512_reduce_add_epi32(s4), _mm512_reduce_add_epi32(s5),
+              _mm512_reduce_add_epi32(s6), _mm512_reduce_add_epi32(s7)};
+  for (; i < dim; i++)
+    for (int j = 0; j < 8; j++) r[j] += (int)q[i] * (int)rows[j][i];
+  for (int j = 0; j < 8; j++) out[j] = r[j];
+}
+
+// AVX2 fallback for CPUs without VNNI: widen bytes to 16 bits and use madd.
+__attribute__((target("avx2"))) static inline void qdot4_avx2(
+    const uint8_t* __restrict q, const int8_t* const rows[4], int dim, int* out) {
+  __m256i s0 = _mm256_setzero_si256(), s1 = s0, s2 = s0, s3 = s0;
+  int i = 0;
+  for (; i + 32 <= dim; i += 32) {
+    __m256i qv = _mm256_loadu_si256((const __m256i*)(q + i));
+    __m256i qlo = _mm256_cvtepu8_epi16(_mm256_castsi256_si128(qv));
+    __m256i qhi = _mm256_cvtepu8_epi16(_mm256_extracti128_si256(qv, 1));
+    for (int j = 0; j < 4; j++) {
+      __m256i rv = _mm256_loadu_si256((const __m256i*)(rows[j] + i));
+      __m256i rlo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(rv));
+      __m256i rhi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(rv, 1));
+      __m256i *sp = j == 0 ? &s0 : (j == 1 ? &s1 : (j == 2 ? &s2 : &s3));
+      *sp = _mm256_add_epi32(*sp, _mm256_madd_epi16(qlo, rlo));
+      *sp = _mm256_add_epi32(*sp, _mm256_madd_epi16(qhi, rhi));
+    }
+  }
+  __m128i r0 = _mm_add_epi32(_mm256_castsi256_si128(s0), _mm256_extracti128_si256(s0, 1));
+  __m128i r1 = _mm_add_epi32(_mm256_castsi256_si128(s1), _mm256_extracti128_si256(s1, 1));
+  __m128i r2 = _mm_add_epi32(_mm256_castsi256_si128(s2), _mm256_extracti128_si256(s2, 1));
+  __m128i r3 = _mm_add_epi32(_mm256_castsi256_si128(s3), _mm256_extracti128_si256(s3, 1));
+  r0 = _mm_hadd_epi32(r0, r0); r0 = _mm_hadd_epi32(r0, r0);
+  r1 = _mm_hadd_epi32(r1, r1); r1 = _mm_hadd_epi32(r1, r1);
+  r2 = _mm_hadd_epi32(r2, r2); r2 = _mm_hadd_epi32(r2, r2);
+  r3 = _mm_hadd_epi32(r3, r3); r3 = _mm_hadd_epi32(r3, r3);
+  out[0] = _mm_cvtsi128_si32(r0); out[1] = _mm_cvtsi128_si32(r1);
+  out[2] = _mm_cvtsi128_si32(r2); out[3] = _mm_cvtsi128_si32(r3);
+  for (int j = 0; j < 4; j++)
+    for (int k = i; k < dim; k++) out[j] += (int)q[k] * (int)rows[j][k];
+}
+
+__attribute__((target("avx512f,avx512bw,avx512vnni,fma"))) static int scanRangeDot512(
+    const float* base, int dim, const int8_t* qbase, const uint8_t* qsafe,
+    const double* normScaled, const int32_t* rowSum, const int32_t* rowAbs,
+    const uint8_t* live, const int64_t* pks, uint64_t n, const float* q,
+    const uint8_t* qquant, int k, int desc, CandOut* out) {
+  if (k <= 0) return 0;
+  TopK tk{out, 0, k, desc};
+  const size_t stride = (size_t)dim;
+  const double step2 = kQuantStep * kQuantStep;
+  double qn = 0.0;
+  int qabs = 0;
+  for (int i = 0; i < dim; i++) {
+    qn += (double)q[i] * (double)q[i];
+    qabs += std::abs((int)qquant[i] - 128);
+  }
+  // All terms below are divided by step^2 so the inner loop never multiplies
+  // distances by a tiny constant. The margin covers double rounding at 1e-4.
+  const double qConst = qn / step2 - (double)qabs - 0.5 * (double)dim - 1e-6;
+  double cutoffScaled = INFINITY;
+  auto refine = [&](uint64_t rr, int D) {
+    const double lower = normScaled[rr] + qConst -
+                         2.0 * ((double)D - 128.0 * (double)rowSum[rr]) -
+                         (double)rowAbs[rr];
+    if (tk.nb == tk.k && lower > cutoffScaled) return;
+    addBounded<l2sqAvx2>(tk, base + rr * stride, q, dim, pks[rr], (uint32_t)rr);
+    if (tk.nb == tk.k) cutoffScaled = tk.best[tk.k - 1].d / step2;
+  };
+  uint64_t r = 0;
+  while (r + 8 <= n) {
+    bool all = true;
+    for (int j = 0; j < 8; j++) {
+      if (!live[r + j] || !qsafe[r + j]) { all = false; break; }
+    }
+    if (!all) {
+      if (live[r]) {
+        if (!qsafe[r]) addBounded<l2sqAvx2>(tk, base + r * stride, q, dim, pks[r],
+                                           (uint32_t)r);
+        else refine(r, qdot1_512(qquant, qbase + r * stride, dim));
+      }
+      r++;
+      continue;
+    }
+    const int8_t* rows[8];
+    for (int j = 0; j < 8; j++) rows[j] = qbase + (r + j) * stride;
+    int D[8];
+    qdot8_512(qquant, rows, dim, D);
+    __m256i dv = _mm256_loadu_si256((const __m256i*)D);
+    __m256i sv = _mm256_loadu_si256((const __m256i*)(rowSum + r));
+    __m256i av = _mm256_loadu_si256((const __m256i*)(rowAbs + r));
+    __m256i core = _mm256_sub_epi32(dv, _mm256_slli_epi32(sv, 7));
+    __m512d lower = _mm512_add_pd(_mm512_loadu_pd(normScaled + r),
+                                  _mm512_set1_pd(qConst));
+    lower = _mm512_sub_pd(lower, _mm512_mul_pd(_mm512_set1_pd(2.0),
+                                               _mm512_cvtepi32_pd(core)));
+    lower = _mm512_sub_pd(lower, _mm512_cvtepi32_pd(av));
+    __mmask8 skip = 0;
+    if (tk.nb == tk.k)
+      skip = _mm512_cmp_pd_mask(lower, _mm512_set1_pd(cutoffScaled), _CMP_GT_OQ);
+    unsigned todo = ((unsigned)skip) ^ 0xFFu;
+    while (todo) {
+      int j = __builtin_ctz(todo);
+      todo &= todo - 1;
+      addBounded<l2sqAvx2>(tk, base + (r + j) * stride, q, dim, pks[r + j],
+                           (uint32_t)(r + j));
+      if (tk.nb == tk.k) cutoffScaled = tk.best[tk.k - 1].d / step2;
+    }
+    r += 8;
+  }
+  for (; r < n; r++) {
+    if (!live[r]) continue;
+    if (!qsafe[r]) addBounded<l2sqAvx2>(tk, base + r * stride, q, dim, pks[r],
+                                       (uint32_t)r);
+    else refine(r, qdot1_512(qquant, qbase + r * stride, dim));
+  }
+  return tk.nb;
+}
+
+__attribute__((target("avx512f,avx512bw,avx512vnni,fma"))) static int scanGatherDot512(
+    const float* base, int dim, const int8_t* qbase, const uint8_t* qsafe,
+    const double* normScaled, const int32_t* rowSum, const int32_t* rowAbs,
+    const uint32_t* rowids, size_t count, const int64_t* pks, const float* q,
+    const uint8_t* qquant, int k, int desc, CandOut* out) {
+  if (k <= 0) return 0;
+  TopK tk{out, 0, k, desc};
+  const size_t stride = (size_t)dim;
+  const double step2 = kQuantStep * kQuantStep;
+  double qn = 0.0;
+  int qabs = 0;
+  for (int i = 0; i < dim; i++) {
+    qn += (double)q[i] * (double)q[i];
+    qabs += std::abs((int)qquant[i] - 128);
+  }
+  const double qConst = qn / step2 - (double)qabs - 0.5 * (double)dim - 1e-6;
+  double cutoffScaled = INFINITY;
+  auto refine = [&](uint32_t rr, int D) {
+    const double lower = normScaled[rr] + qConst -
+                         2.0 * ((double)D - 128.0 * (double)rowSum[rr]) -
+                         (double)rowAbs[rr];
+    if (tk.nb == tk.k && lower > cutoffScaled) return;
+    addBounded<l2sqAvx2>(tk, base + (uint64_t)rr * stride, q, dim, pks[rr], rr);
+    if (tk.nb == tk.k) cutoffScaled = tk.best[tk.k - 1].d / step2;
+  };
+  size_t i = 0;
+  while (i + 8 <= count) {
+    bool all = true;
+    for (int j = 0; j < 8; j++)
+      if (!qsafe[rowids[i + j]]) { all = false; break; }
+    if (!all) {
+      uint32_t rr = rowids[i];
+      if (!qsafe[rr]) addBounded<l2sqAvx2>(tk, base + (uint64_t)rr * stride, q, dim,
+                                         pks[rr], rr);
+      else refine(rr, qdot1_512(qquant, qbase + (uint64_t)rr * stride, dim));
+      i++;
+      continue;
+    }
+    const int8_t* rows[8];
+    for (int j = 0; j < 8; j++) rows[j] = qbase + (uint64_t)rowids[i + j] * stride;
+    int D[8];
+    qdot8_512(qquant, rows, dim, D);
+    __m256i dv = _mm256_loadu_si256((const __m256i*)D);
+    __m256i idx = _mm256_loadu_si256((const __m256i*)(rowids + i));
+    __m512d norm = _mm512_i32gather_pd(idx, normScaled, 8);
+    __m256i sv = _mm256_i32gather_epi32(rowSum, idx, 4);
+    __m256i av = _mm256_i32gather_epi32(rowAbs, idx, 4);
+    __m256i core = _mm256_sub_epi32(dv, _mm256_slli_epi32(sv, 7));
+    __m512d lower = _mm512_add_pd(norm, _mm512_set1_pd(qConst));
+    lower = _mm512_sub_pd(lower, _mm512_mul_pd(_mm512_set1_pd(2.0),
+                                               _mm512_cvtepi32_pd(core)));
+    lower = _mm512_sub_pd(lower, _mm512_cvtepi32_pd(av));
+    __mmask8 skip = 0;
+    if (tk.nb == tk.k)
+      skip = _mm512_cmp_pd_mask(lower, _mm512_set1_pd(cutoffScaled), _CMP_GT_OQ);
+    unsigned todo = ((unsigned)skip) ^ 0xFFu;
+    while (todo) {
+      int j = __builtin_ctz(todo);
+      todo &= todo - 1;
+      uint32_t rr = rowids[i + j];
+      addBounded<l2sqAvx2>(tk, base + (uint64_t)rr * stride, q, dim, pks[rr], rr);
+      if (tk.nb == tk.k) cutoffScaled = tk.best[tk.k - 1].d / step2;
+    }
+    i += 8;
+  }
+  for (; i < count; i++) {
+    uint32_t rr = rowids[i];
+    if (!qsafe[rr]) addBounded<l2sqAvx2>(tk, base + (uint64_t)rr * stride, q, dim,
+                                       pks[rr], rr);
+    else refine(rr, qdot1_512(qquant, qbase + (uint64_t)rr * stride, dim));
+  }
+  return tk.nb;
+}
+
+__attribute__((target("avx2,fma"))) static int scanRangeDotAvx2(
+    const float* base, int dim, const int8_t* qbase, const uint8_t* qsafe,
+    const double* normScaled, const int32_t* rowSum, const int32_t* rowAbs,
+    const uint8_t* live, const int64_t* pks, uint64_t n, const float* q,
+    const uint8_t* qquant, int k, int desc, CandOut* out) {
+  if (k <= 0) return 0;
+  TopK tk{out, 0, k, desc};
+  const size_t stride = (size_t)dim;
+  const double step2 = kQuantStep * kQuantStep;
+  double qn = 0.0;
+  int qabs = 0;
+  for (int i = 0; i < dim; i++) {
+    qn += (double)q[i] * (double)q[i];
+    qabs += std::abs((int)qquant[i] - 128);
+  }
+  const double qConst = qn / step2 - (double)qabs - 0.5 * (double)dim - 1e-6;
+  double cutoffScaled = INFINITY;
+  auto refine = [&](uint64_t rr, int D) {
+    const double lower = normScaled[rr] + qConst -
+                         2.0 * ((double)D - 128.0 * (double)rowSum[rr]) -
+                         (double)rowAbs[rr];
+    if (tk.nb == tk.k && lower > cutoffScaled) return;
+    addBounded<l2sqAvx2>(tk, base + rr * stride, q, dim, pks[rr], (uint32_t)rr);
+    if (tk.nb == tk.k) cutoffScaled = tk.best[tk.k - 1].d / step2;
+  };
+  uint64_t r = 0;
+  while (r + 4 <= n) {
+    bool all = true;
+    for (int j = 0; j < 4; j++)
+      if (!live[r + j] || !qsafe[r + j]) { all = false; break; }
+    if (!all) {
+      if (live[r]) {
+        if (!qsafe[r]) addBounded<l2sqAvx2>(tk, base + r * stride, q, dim, pks[r],
+                                           (uint32_t)r);
+        else {
+          const int8_t* one[4] = {qbase + r * stride, qbase + r * stride,
+                                  qbase + r * stride, qbase + r * stride};
+          int D[4];
+          qdot4_avx2(qquant, one, dim, D);
+          refine(r, D[0]);
+        }
+      }
+      r++; continue;
+    }
+    const int8_t* rows[4] = {qbase + r * stride, qbase + (r + 1) * stride,
+                             qbase + (r + 2) * stride, qbase + (r + 3) * stride};
+    int D[4];
+    qdot4_avx2(qquant, rows, dim, D);
+    for (int j = 0; j < 4; j++) refine(r + j, D[j]);
+    r += 4;
+  }
+  for (; r < n; r++) {
+    if (!live[r]) continue;
+    if (!qsafe[r]) addBounded<l2sqAvx2>(tk, base + r * stride, q, dim, pks[r],
+                                       (uint32_t)r);
+    else {
+      const int8_t* one[4] = {qbase + r * stride, qbase + r * stride,
+                              qbase + r * stride, qbase + r * stride};
+      int D[4];
+      qdot4_avx2(qquant, one, dim, D);
+      refine(r, D[0]);
+    }
+  }
+  return tk.nb;
+}
+
+__attribute__((target("avx2,fma"))) static int scanGatherDotAvx2(
+    const float* base, int dim, const int8_t* qbase, const uint8_t* qsafe,
+    const double* normScaled, const int32_t* rowSum, const int32_t* rowAbs,
+    const uint32_t* rowids, size_t count, const int64_t* pks, const float* q,
+    const uint8_t* qquant, int k, int desc, CandOut* out) {
+  if (k <= 0) return 0;
+  TopK tk{out, 0, k, desc};
+  const size_t stride = (size_t)dim;
+  const double step2 = kQuantStep * kQuantStep;
+  double qn = 0.0;
+  int qabs = 0;
+  for (int i = 0; i < dim; i++) {
+    qn += (double)q[i] * (double)q[i];
+    qabs += std::abs((int)qquant[i] - 128);
+  }
+  const double qConst = qn / step2 - (double)qabs - 0.5 * (double)dim - 1e-6;
+  double cutoffScaled = INFINITY;
+  auto refine = [&](uint32_t rr, int D) {
+    const double lower = normScaled[rr] + qConst -
+                         2.0 * ((double)D - 128.0 * (double)rowSum[rr]) -
+                         (double)rowAbs[rr];
+    if (tk.nb == tk.k && lower > cutoffScaled) return;
+    addBounded<l2sqAvx2>(tk, base + (uint64_t)rr * stride, q, dim, pks[rr], rr);
+    if (tk.nb == tk.k) cutoffScaled = tk.best[tk.k - 1].d / step2;
+  };
+  size_t i = 0;
+  while (i + 4 <= count) {
+    bool all = true;
+    for (int j = 0; j < 4; j++) if (!qsafe[rowids[i + j]]) { all = false; break; }
+    if (!all) {
+      uint32_t rr = rowids[i];
+      if (!qsafe[rr]) addBounded<l2sqAvx2>(tk, base + (uint64_t)rr * stride, q, dim,
+                                         pks[rr], rr);
+      else {
+        const int8_t* one[4] = {qbase + (uint64_t)rr * stride,
+                                qbase + (uint64_t)rr * stride,
+                                qbase + (uint64_t)rr * stride,
+                                qbase + (uint64_t)rr * stride};
+        int D[4]; qdot4_avx2(qquant, one, dim, D); refine(rr, D[0]);
+      }
+      i++; continue;
+    }
+    const int8_t* rows[4];
+    for (int j = 0; j < 4; j++) rows[j] = qbase + (uint64_t)rowids[i + j] * stride;
+    int D[4];
+    qdot4_avx2(qquant, rows, dim, D);
+    for (int j = 0; j < 4; j++) refine(rowids[i + j], D[j]);
+    i += 4;
+  }
+  for (; i < count; i++) {
+    uint32_t rr = rowids[i];
+    if (!qsafe[rr]) addBounded<l2sqAvx2>(tk, base + (uint64_t)rr * stride, q, dim,
+                                       pks[rr], rr);
+    else {
+      const int8_t* one[4] = {qbase + (uint64_t)rr * stride,
+                              qbase + (uint64_t)rr * stride,
+                              qbase + (uint64_t)rr * stride,
+                              qbase + (uint64_t)rr * stride};
+      int D[4]; qdot4_avx2(qquant, one, dim, D); refine(rr, D[0]);
+    }
+  }
+  return tk.nb;
+}
+
 #endif
 
 }  // namespace
@@ -616,30 +983,36 @@ int scanTopKGather(const float* base, int dim, const uint32_t* rowids, size_t co
   return scanGatherScalar(base, dim, rowids, count, pks, q, k, desc, out);
 }
 
-int scanTopKRangeQuant(const float* base, int dim, const uint8_t* qbase,
-                       const uint8_t* qsafe, const uint8_t* live, const int64_t* pks,
-                       uint64_t n, const float* q, const uint8_t* qquant, int k,
-                       int desc, CandOut* out) {
+int scanTopKRangeQuant(const float* base, int dim, const int8_t* qbase,
+                       const uint8_t* qsafe, const double* normScaled,
+                       const int32_t* rowSum, const int32_t* rowAbs,
+                       const uint8_t* live, const int64_t* pks, uint64_t n,
+                       const float* q, const uint8_t* qquant, int k, int desc,
+                       CandOut* out) {
 #if MVDB_X86
-  if (g_useAvx512bw && !desc && dim >= 64)
-    return scanRangeQuant512(base, dim, qbase, qsafe, live, pks, n, q, qquant, k, desc, out);
+  if (g_useAvx512vnni && !desc && dim >= 64)
+    return scanRangeDot512(base, dim, qbase, qsafe, normScaled, rowSum, rowAbs, live,
+                           pks, n, q, qquant, k, desc, out);
   if (g_useAvx2 && !desc && dim >= 32)
-    return scanRangeQuantAvx2(base, dim, qbase, qsafe, live, pks, n, q, qquant, k, desc, out);
+    return scanRangeDotAvx2(base, dim, qbase, qsafe, normScaled, rowSum, rowAbs, live,
+                            pks, n, q, qquant, k, desc, out);
 #endif
   return scanTopKRange(base, dim, live, pks, n, q, k, desc, out);
 }
 
-int scanTopKGatherQuant(const float* base, int dim, const uint8_t* qbase,
-                        const uint8_t* qsafe, const uint32_t* rowids, size_t count,
-                        const int64_t* pks, const float* q, const uint8_t* qquant, int k,
-                        int desc, CandOut* out) {
+int scanTopKGatherQuant(const float* base, int dim, const int8_t* qbase,
+                        const uint8_t* qsafe, const double* normScaled,
+                        const int32_t* rowSum, const int32_t* rowAbs,
+                        const uint32_t* rowids, size_t count, const int64_t* pks,
+                        const float* q, const uint8_t* qquant, int k, int desc,
+                        CandOut* out) {
 #if MVDB_X86
-  if (g_useAvx512bw && !desc && dim >= 64)
-    return scanGatherQuant512(base, dim, qbase, qsafe, rowids, count, pks, q, qquant, k,
-                              desc, out);
+  if (g_useAvx512vnni && !desc && dim >= 64)
+    return scanGatherDot512(base, dim, qbase, qsafe, normScaled, rowSum, rowAbs, rowids,
+                            count, pks, q, qquant, k, desc, out);
   if (g_useAvx2 && !desc && dim >= 32)
-    return scanGatherQuantAvx2(base, dim, qbase, qsafe, rowids, count, pks, q, qquant, k,
-                               desc, out);
+    return scanGatherDotAvx2(base, dim, qbase, qsafe, normScaled, rowSum, rowAbs, rowids,
+                             count, pks, q, qquant, k, desc, out);
 #endif
   return scanTopKGather(base, dim, rowids, count, pks, q, k, desc, out);
 }

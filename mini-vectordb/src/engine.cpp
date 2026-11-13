@@ -29,6 +29,9 @@ void VecStore::init(int dim, const std::string& path, size_t memBudgetBytes) {
   mem_ = nullptr;
   sketch_.clear();
   sketchSafe_.clear();
+  sketchNormScaled_.clear();
+  sketchSum_.clear();
+  sketchAbs_.clear();
   sketchEnabled_ = dim > 0 && dim <= 1024;
 }
 
@@ -42,6 +45,9 @@ void VecStore::reset() {
   fileCap_ = 0;
   sketch_.clear();
   sketchSafe_.clear();
+  sketchNormScaled_.clear();
+  sketchSum_.clear();
+  sketchAbs_.clear();
 }
 
 void VecStore::switchToDisk() {
@@ -106,28 +112,45 @@ void VecStore::set(uint64_t rowid, const float* v) {
     sketchEnabled_ = false;
     sketch_.clear();
     sketchSafe_.clear();
+    sketchNormScaled_.clear();
+    sketchSum_.clear();
+    sketchAbs_.clear();
     return;
   }
   const size_t need = (size_t)(rowid + 1) * (size_t)dim_;
   if (sketch_.size() < need) sketch_.resize(need);
   if (sketchSafe_.size() <= rowid) sketchSafe_.resize((size_t)rowid + 1);
-  uint8_t* dst = sketch_.data() + (size_t)rowid * (size_t)dim_;
+  if (sketchNormScaled_.size() <= rowid) sketchNormScaled_.resize((size_t)rowid + 1);
+  if (sketchSum_.size() <= rowid) sketchSum_.resize((size_t)rowid + 1);
+  if (sketchAbs_.size() <= rowid) sketchAbs_.resize((size_t)rowid + 1);
+  int8_t* dst = sketch_.data() + (size_t)rowid * (size_t)dim_;
   bool safe = true;
+  double norm = 0.0;
+  int32_t ssum = 0, sabs = 0;
+  constexpr double kStep = 0.008;
   for (int i = 0; i < dim_; i++) {
-    // Fixed grid: step 0.008, byte 128 is zero. Values outside the byte range
-    // are stored clamped and flagged; those rows always take the exact path.
+    // Fixed grid: step 0.008, signed byte zero is the origin. Values outside
+    // [-1.024, 1.016] are stored clamped and flagged; those rows always take
+    // the exact path. Non-finite input is likewise flagged.
     float scaled = v[i] * 125.0f;
-    long q = std::isfinite(scaled) ? std::lrintf(scaled) + 128 : 0;
-    if (q < 0) {
+    bool finite = std::isfinite(scaled);
+    long q = finite ? std::lrintf(scaled) : 0;
+    if (!finite || q < -128) {
       safe = false;
-      q = 0;
-    } else if (q > 255) {
+      q = -128;
+    } else if (q > 127) {
       safe = false;
-      q = 255;
+      q = 127;
     }
-    dst[i] = (uint8_t)q;
+    dst[i] = (int8_t)q;
+    norm += (double)v[i] * (double)v[i];
+    ssum += (int32_t)q;
+    sabs += (int32_t)(q < 0 ? -q : q);
   }
   sketchSafe_[rowid] = safe ? 1 : 0;
+  sketchNormScaled_[rowid] = norm / (kStep * kStep);
+  sketchSum_[rowid] = ssum;
+  sketchAbs_[rowid] = sabs;
 }
 
 bool VecStore::sketchQuery(const float* q, std::vector<uint8_t>& out) const {
@@ -135,8 +158,9 @@ bool VecStore::sketchQuery(const float* q, std::vector<uint8_t>& out) const {
   bool safe = true;
   for (int i = 0; i < dim_; i++) {
     float scaled = q[i] * 125.0f;
-    long v = std::isfinite(scaled) ? std::lrintf(scaled) + 128 : 0;
-    if (v < 0) {
+    bool finite = std::isfinite(scaled);
+    long v = finite ? std::lrintf(scaled) + 128 : 0;
+    if (!finite || v < 0) {
       safe = false;
       v = 0;
     } else if (v > 255) {

@@ -29,18 +29,24 @@ int scanTopKGather(const float* base, int dim, const uint32_t* rowids, size_t co
                    const int64_t* pks, const float* q, int k, int desc, CandOut* out);
 
 // Exact scans that first use a per-row 8-bit sketch as a conservative lower
-// bound. `qbase` holds dim bytes per row and `qsafe[r] != 0` means every
-// component of row r is inside the sketch's representable interval. Rows
+// bound. `qbase` is signed quantized coordinates, `qsafe[r] != 0` means every
+// component of row r is inside the sketch's representable interval, and
+// norm/sum/abs hold the row statistics used by the dot-product bound. Rows
 // outside that interval, and all queries outside it, fall back to the exact
-// kernel. Results are bit-for-bit identical to scanTopKRange/Gather.
-int scanTopKRangeQuant(const float* base, int dim, const uint8_t* qbase,
-                       const uint8_t* qsafe, const uint8_t* live, const int64_t* pks,
-                       uint64_t n, const float* q, const uint8_t* qquant, int k,
-                       int desc, CandOut* out);
-int scanTopKGatherQuant(const float* base, int dim, const uint8_t* qbase,
-                        const uint8_t* qsafe, const uint32_t* rowids, size_t count,
-                        const int64_t* pks, const float* q, const uint8_t* qquant, int k,
-                        int desc, CandOut* out);
+// kernel. Results keep the same primary-key order as scanTopKRange/Gather;
+// only the last-bit rounding of reported float64 distances may differ.
+int scanTopKRangeQuant(const float* base, int dim, const int8_t* qbase,
+                       const uint8_t* qsafe, const double* normScaled,
+                       const int32_t* rowSum, const int32_t* rowAbs,
+                       const uint8_t* live, const int64_t* pks, uint64_t n,
+                       const float* q, const uint8_t* qquant, int k, int desc,
+                       CandOut* out);
+int scanTopKGatherQuant(const float* base, int dim, const int8_t* qbase,
+                        const uint8_t* qsafe, const double* normScaled,
+                        const int32_t* rowSum, const int32_t* rowAbs,
+                        const uint32_t* rowids, size_t count, const int64_t* pks,
+                        const float* q, const uint8_t* qquant, int k, int desc,
+                        CandOut* out);
 
 // Merges per-chunk result lists (each already ordered best-first by the same
 // comparator) into the global best k. Returns the number written to `out`.
