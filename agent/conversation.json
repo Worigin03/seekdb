@@ -1,15 +1,15 @@
 {
-  "summary": "本材料包含真实用户 Prompt、平台回执、学生个人复盘、round5 实验记录和按 agent-learning-evidence-v3-unbounded 整理的去重证据链。最新平台回执仍对应 463fcbc：MySQL 准入通过，E=3244.271304，Agent Prompt=5.500000；5475d05 的 round4 材料与当前 round5 材料都还没有新的平台分。round5 在 5475d05 的 8 位保守草图之上改为有符号行草图，新增精确行范数、整数和、绝对和，用 AVX-512 VNNI 计算点积型严格下界；初版把误差项符号写反的偏大下界已废弃。修正后微基准 56.27µs/query、重算1.027%；229/229 回归、常规/边界差分、AVX2 回退、官方原生20/20、Linux/amd64 Docker 20/20 均通过。同机交替五轮 463 与 round5：查询总耗时中位 0.104→0.056s，写入 0.436→0.448s；这是本地墙钟，不冒充平台 E。材料保留七条原证据并新增“Prompt材料修复”1.0与“保留基线”0.5两个独立实例，保守自检10.0，不是平台得分。",
+  "summary": "本材料是 round5 提交（远端 9761c77）对应的真实学习记录，并按 agent-learning-evidence-v3-unbounded 的 0.5/1/1.5/2.0 档位重新对齐。最新平台回执：性能原始指标 E=4417.415245、Agent Prompt=6.500000；上一有效回执为 463fcbc 的 E=3244.271304、Prompt=5.500000。round5 的 E 来自平台，不是本地 0.104→0.056s 的换算；Prompt 6.5 是旧材料 v3 的得分，本材料 v4 尚未复评。v4 的关键变化：把 U6/U7 的 float32 第 K 名边界链补成 2.0 档（预测→反例→修正→多线程迁移→局限），删除重复的 T13 引用；新增“本地指标不能替代平台 E”独立实例；新增平台双指标复盘 0.5 档；保留协议、VARCHAR、内存/时间、Docker、材料格式和保留基线实例。学生原文与助手执行、平台回执分层标注，自检分只用于查漏，不是平台分。",
   "synthetic": false,
   "scope": {
     "baseline_commit": "a3616b007a2aa7f3e2289637550b492c9bcad367",
     "protocol_package_commit": "f4d4e26653af823a7601668802f80e374ad6643c",
     "material_path": "agent/conversation.json",
-    "coverage": "从本聊天可直接核对的用户发言、参赛者个人复盘、平台回执和实际工具结果整理。覆盖协议定位、VARCHAR 哈希语义、float32 第 K 名反例、round4 量化草图、round5 有符号点积下界与 VNNI、AVX2 回退、边界复测和两轮 Docker 镜像；当前记录 U8/U10/U11/U12、T29–T39。",
-    "attribution": "本地代码修改、数学复核、自动化测试、基准和 Docker 构建由助手执行，材料中明确标为 tool/assistant。学生原文只使用 U1–U12 中真实出现的句子；U6/U7 是学生自己写的预测、通过/拒绝标准和结果解释，U10 是镜像复测要求，U11 是双目标约束，U12 是保留已推送基线的取舍。未把助手的点积下界推导、符号纠错或 VNNI 实现伪装成学生逐字贡献；这些只作为 result_evidence。",
+    "coverage": "覆盖 U1–U13 的真实用户发言、参赛者复盘、平台回执 R1–R5 和工具结果 T1–T40；重点记录协议定位、float32 第 K 名反例、多线程迁移、VARCHAR 哈希语义、本地指标与平台 E 的差异、round4/round5 量化与 VNNI、AVX2 回退、Docker 复测。",
+    "attribution": "本地代码修改、数学复核、自动化测试、基准和 Docker 构建由助手执行，材料中明确标为 tool/assistant。学生原文只使用 U1–U13 中真实出现的句子；U6/U7 是学生自己写的预测、通过/拒绝标准和结果解释，U10 是镜像复测要求，U11/U13 是双目标与优先级，U12 是保留已推送基线的取舍。未把助手的点积下界推导、符号纠错或 VNNI 实现伪装成学生逐字贡献；这些只作为 result_evidence。",
     "redaction": "命令和输出省略本机绝对路径、凭据及不相关日志。用户发言摘录保留原文。",
     "current_candidate_base": "5475d05ba466016f17def4dd43268ebb89677433",
-    "round5_status": "源码已在 Linux 工作区完成修改、编译、229项回归、差分、同机交替和 Docker 复测；尚未形成平台新回执。"
+    "round5_status": "round5 源码与材料已推送到 9761c77（源码提交 689eaad，父 5475d05），平台已返回 E=4417.415245、Prompt=6.500000；本材料 v4 尚未提测复评。"
   },
   "conversations": [
     {
@@ -187,6 +187,11 @@
         "T39"
       ],
       "content": "在 5475d05 的保守量化草图之上继续做 second-stage 剪枝：将行草图改为有符号 8 位，新增每行精确平方范数、整数和与绝对和，用 AVX-512 VNNI 一次计算 64 维无符号查询×有符号行点积，并以严格 L2 下界决定是否调用原 float64 内核。初版下界把误差项符号写反，虽然重算率更低但下界偏大、可能误剪，已废弃；修正后微基准 56.27µs/query、重算 1.027%。229 项回归、常规/边界差分、官方原生和 Linux/amd64 Docker 公开 20/20 均通过，AVX2 回退另编译验证。"
+    },
+    {
+      "id": "U13",
+      "role": "user",
+      "content": "性能原始分 | — | 4417.415245 | 性能评测完成；原始指标 E = 4417.415245\nAgent Prompt 原始分 | — | 6.5 | Agent Prompt评测完成；原始分 = 6.500000\n最新评测结果，Agent Prompt 原始分太低，请你从多方面多角度的去思考问题，如何把赛题二的分数提高，如果可以的话也尽可能的去提高赛题一的性能原始分"
     }
   ],
   "platform_feedback": [
@@ -236,6 +241,18 @@
       "performance_output": "性能评测完成；原始指标 E = 3244.271304",
       "prompt_output": "Agent Prompt评测完成；原始分 = 5.500000",
       "context": "对应提交 463fcbc2a251c472f64348c4a5dffa46d31e2658。E 由上一轮的 3056.558816 回升到 3244.271304，Agent Prompt 首次得到有效分 5.5。平台未提供 T/B/M 明细；本轮 round4 量化候选尚未提测，不能把它的本地提升写成新的平台 E。"
+    },
+    {
+      "id": "R5",
+      "source": "参赛者转述的最新平台回执（本轮）",
+      "related": [
+        "U13",
+        "T34",
+        "T38"
+      ],
+      "performance_output": "性能评测完成；原始指标 E = 4417.415245",
+      "prompt_output": "Agent Prompt评测完成；原始分 = 6.500000",
+      "context": "对应 round5 提交 9761c77846862777091aced45a685019b1cfbd32。E 较上一有效回执 3244.271304 提高 36.160476%，但平台未提供 T/B/M 明细；Agent Prompt 6.5 是材料 v3 的得分，当前 v4 尚未复评。"
     }
   ],
   "experiments": [
@@ -701,6 +718,19 @@
       "setup": "解析全部 RFC6901 pointer，检查原始字符串包含、240 字符上限、跨实例重复、五维覆盖、UTF-8 合法 JSON 和 128 KiB 上限。",
       "output": "AUDIT_PASS units=9 student_refs=16 result_refs=18 raw=10.0",
       "scope": "结构审计只证明引用可定位，不证明平台评分；平台对实例和档位的认定可能不同。"
+    },
+    {
+      "id": "T40",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "T39",
+        "R5"
+      ],
+      "command": "python3 /tmp/audit_agent.py",
+      "setup": "在 T39 基础上增加 240 字符、跨实例及单元内重复引用、0.5 档结果必须为空、>0.5 档结果不得为空、RFC6901 定位和五维加和检查。",
+      "output": "AUDIT_PASS units=10 student_refs=20 result_refs=21 raw=11.5",
+      "scope": "结构审计只证明引用可定位和档位字段自洽，不证明平台评分。"
     }
   ],
   "retrospective": [
@@ -767,14 +797,16 @@
   ],
   "limitations": [
     "参赛者的判断形成于已有实验结果之后；材料区分学生原话、平台回执和助手执行结果，不把自动生成的方案说明当作学生技术理解。",
-    "最新平台回执 E=3244.271304、Prompt=5.500000 对应 463fcbc；5475d05 的 round4 材料与当前 round5 材料均尚未产生新的平台分。",
+    "最新平台回执为 R5：E=4417.415245、Prompt=6.500000，对应 round5 提交 9761c77；Prompt 6.5 是材料 v3 的分数，v4 尚未复评。",
     "round5 的 0.104→0.056s 查询总耗时是同一主机、同一脚本的五轮交替墙钟中位，不是平台 T/B/M；不能按 60/20/20 权重换算 E。",
     "round5 每行新增约16字节统计数组（10k行约0.16MB），且仍保留 dim 字节草图；平台内存权重与容器峰值统计可能改变收益。",
     "点积下界只用于跳过不可能进入 TopK 的行；最终入选行仍由原 float64 内核重算。差分覆盖常规与量化边界，但不是全部输入空间的形式证明。",
     "T38 的 Docker 复测使用官方 case loader、期望结果和 assertions，但为绕过 Windows selectors 对匿名管道的限制，测试会话改用阻塞 readline/write；不等同平台执行器。",
     "公开20/20、官方握手、229项回归和 AVX2 回退不等同正式29个 MySQL 用例；正式准入须由平台对同一提交重新确认。",
     "T35 的 AVX2 回退是用编译开关在支持 AVX-512 的 CPU 上强制关闭 VNNI，并未在真实无 VNNI 硬件上执行。",
-    "Agent 材料自检10.0是保守整理，不是平台评审报告；平台对独立实例、档位和三轮中位数的认定可能不同。"
+    "Agent 材料 v4 的结构审计为 10 个单元、学生引用20、结果引用21、自检11.5；这是按公开 v3 量表的保守整理，不是平台评审报告，平台对独立实例、档位和三轮中位数的认定可能不同。",
+    "v4 把 float32 第 K 名链按 2.0 档整理，是因为它包含学生原始预测、实际反例检查、学生结果解释与边界限定、学生指定的多线程迁移以及 T13 新场景复测；评审仍可独立判断是否属于同一实例。",
+    "本地指标与平台 E 的实例只说明测量口径差异，不证明 round5 的平台 E 由某个代码改动单独造成；R5 的 4417.415245 是平台回执，不能拆成 T/B/M 明细。"
   ],
   "rule_version": "agent-learning-evidence-v3-unbounded",
   "material_type": "real_learning_records",
@@ -809,7 +841,7 @@
       "id": "unit-simd-hardware-check",
       "dimension": "技术理解与迁移",
       "score": 1.0,
-      "reason": "学生用编译器、缓存、循环结构和硬件特性解释理论 SIMD 优势为何可能退化，并否定该方案；本轮 16 行共享加载再次因寄存器压力变慢而被撤回，延续了同一判断原则。",
+      "reason": "学生用编译器优化、缓存访问、循环结构和实际硬件执行特性解释理论 SIMD 优势为何可能退化，并决定不保留四行方案；实际 T3 显示查询中位由 0.3765 秒升至 0.4418 秒。T35 的 16 行共享加载也变慢，但它只是同一判断原则的后续反例，材料不把该轮助手实验说成学生独立迁移。",
       "student_evidence": [
         {
           "pointer": "/retrospective/3/content",
@@ -834,9 +866,17 @@
     {
       "id": "unit-topk-cutoff-challenge",
       "dimension": "独立验证与质疑",
-      "score": 1.5,
-      "reason": "学生明确检查第 K 名 float32/float64 分歧和主键并列规则，根据反例搜索修正原预测并限定结论边界；随后要求多线程复测。初始对照与分片复测均有实际结果，但不把助手补测夸大为学生独立迁移。",
+      "score": 2.0,
+      "reason": "学生先给出可证伪预测：float32 估计越过 cutoff 后直接跳过，可能在 float64 第 K 名边界漏掉小主键候选；并预先列出 id/名次/距离绑定、并列主键、插入顺序、过滤路径和真实跳过计数等拒绝条件。实际结果 T10/T11 没有发现反例但保留反例检查，学生在 U7 中解释结果、修正“是否保留”的判断、限定 dim 32–256/升序/k≤256/单线程等边界，并要求补多线程分片复测。T13 在该新场景 32 组通过，学生同时明确 DESC、k>256、dim=65536 等不在证据范围。该实例具备预测→实际验证→修正→新场景迁移→局限分析的完整链，按 2.0 档，而不是把同一链拆成多个1.5档。",
       "student_evidence": [
+        {
+          "pointer": "/conversations/6/content",
+          "quote": "我想验证提交 0dec1df 的 float32 预筛选，在精确 TopK 的第 K 名附近，会不会漏掉本应入选的向量。"
+        },
+        {
+          "pointer": "/conversations/6/content",
+          "quote": "我的通过标准是：比对返回行数、每个名次的主键 id（顺序敏感）、每个名次的 L2_SQUARED_DISTANCE（原始字符串与解析值）、id↔距离绑定、并列组内主键是否严格升序、两种插入顺序结果是否相同、无过滤/有过滤各自与参考一致"
+        },
         {
           "pointer": "/conversations/7/content",
           "quote": "预测被推翻了。我最担心的是「float32 估计越过 cutoff 就被直接跳过、连 float64 都不算」会在第 K 名边界漏掉本应入选的向量，特别是 float32 相同而 float64 不同、又要靠小主键决胜的那一行。"
@@ -856,10 +896,6 @@
           "quote": "SQL 级对照：3276 次查询，0 处不一致（18 组数据集 × 2 种插入顺序 × 无过滤/有过滤 × K=1..N × 0dec1df / a492e27 / 6c1655a 三个构建）；first_counterexample=null，first_counterexample.json 未生成。"
         },
         {
-          "pointer": "/experiments/12/output",
-          "quote": "32 组对照全部通过，96 次执行输出均匹配参考，其中 84 次由两个不同线程处理两片后进入 mergeTopK。两个版本各有 16 组覆盖，32 组均确认预筛选确实跳过了候选。"
-        },
-        {
           "pointer": "/experiments/11/output",
           "quote": "内核级定向反例搜索：30240 次扫描、11688 次真实触发跳过、0 个误跳过 / 0 个排序不一致"
         },
@@ -867,7 +903,13 @@
           "pointer": "/experiments/12/output",
           "quote": "32 组对照全部通过，96 次执行输出均匹配参考，其中 84 次由两个不同线程处理两片后进入 mergeTopK。"
         }
-      ]
+      ],
+      "transfer": {
+        "new_scenario": "多线程分片（每片独立 cutoff）+ mergeTopK",
+        "student_plan": "/conversations/7/planned_followup",
+        "verification": "/experiments/12/output",
+        "limitation": "/conversations/7/content"
+      }
     },
     {
       "id": "unit-varchar-hash-semantics",
@@ -947,11 +989,15 @@
       "id": "unit-multiobjective-platform",
       "dimension": "问题理解与自主拆解",
       "score": 1.0,
-      "reason": "学生把性能 E 与 Agent Prompt 两个目标显式并列，要求在不牺牲 Prompt 分的前提下从多角度提高 E，并用平台回执而不是本地最好轮次作为验收依据。该实例与早期的协议阶段拆分不同。",
+      "reason": "学生先把性能 E 与 Agent Prompt 两个目标显式并列，要求在不牺牲 Prompt 分的前提下从多角度提高 E；R4→R5 的实际回执显示 E 由 3244.271304 升到 4417.415245，Prompt 由 5.5 升到 6.5。学生随后在 U13 中明确指出 Prompt 仍太低、要求优先提高 Prompt，同时“如果可能”再提性能，形成平台回执驱动的目标重排。这里只把已发生的平台结果作为证据，不把尚未复评的 v4 材料当成新分数。",
       "student_evidence": [
         {
           "pointer": "/conversations/13/content",
           "quote": "请你尽可能想办法从多方面多角度地去提高原始指标 E的分数，并且在保住赛题二分数的基础上提高赛题二的分数"
+        },
+        {
+          "pointer": "/conversations/17/content",
+          "quote": "最新评测结果，Agent Prompt 原始分太低，请你从多方面多角度的去思考问题，如何把赛题二的分数提高，如果可以的话也尽可能的去提高赛题一的性能原始分"
         }
       ],
       "result_evidence": [
@@ -962,6 +1008,14 @@
         {
           "pointer": "/experiments/32/output",
           "quote": "463 query total=[0.103,0.103,0.104,0.104,0.106]s，中位 0.104；dot=[0.055,0.057,0.054,0.056,0.071]s，中位 0.056（约 -46.2%）"
+        },
+        {
+          "pointer": "/platform_feedback/4/performance_output",
+          "quote": "性能评测完成；原始指标 E = 4417.415245"
+        },
+        {
+          "pointer": "/platform_feedback/4/prompt_output",
+          "quote": "Agent Prompt评测完成；原始分 = 6.500000"
         }
       ]
     },
@@ -1003,17 +1057,39 @@
         }
       ],
       "result_evidence": []
+    },
+    {
+      "id": "unit-local-vs-platform",
+      "dimension": "取舍与反思",
+      "score": 1.0,
+      "reason": "学生指出本地只测写入/查询墙钟、进程 RSS 和 WAL，而平台还统计物理 I/O、容器峰值内存和自身负载，不能把本地结果直接当成平台 E。实际 T20 显示本地没有复现平台约 20% 的查询回退，R3 的平台 E 从 3847.994551 降到 3056.558816；这验证了本地指标只能用于定位和筛选候选，不能替代平台 T/B/M。本条只记录这一测量边界，不把单次本地提升外推为平台提升。",
+      "student_evidence": [
+        {
+          "pointer": "/retrospective/5/content",
+          "quote": "本地测试主要测量写入、查询墙钟耗时、进程 RSS 和 WAL 文件大小，而正式平台还涉及自己的测试负载、物理 I/O、容器峰值内存及指标计算方式。"
+        }
+      ],
+      "result_evidence": [
+        {
+          "pointer": "/experiments/18/output",
+          "quote": "本地查询中位数未复现平台约 20% 回退，写入受 fsync/宿主机波动影响明显。"
+        },
+        {
+          "pointer": "/platform_feedback/2/performance_output",
+          "quote": "性能评测完成；原始指标 E = 3056.558816"
+        }
+      ]
     }
   ],
   "evidence_totals": {
     "dimensions": {
       "问题理解与自主拆解": 3.5,
       "技术理解与迁移": 1.0,
-      "独立验证与质疑": 2.5,
+      "独立验证与质疑": 3.0,
       "实验与反馈迭代": 1.5,
-      "取舍与反思": 1.5
+      "取舍与反思": 2.5
     },
-    "raw_score": 10.0,
+    "raw_score": 11.5,
     "note": "上述分值是按公开 v3 量表对材料内证据的保守整理，不是平台已给分；0.5档实例不带结果证据，未把助手推导伪装成学生贡献。"
   },
   "prompt_design": [
@@ -1042,6 +1118,15 @@
       "observed_result": "自检10.0，待平台复评；不改变平台已有5.5的历史事实。",
       "evidence": [
         "/experiments/37/output"
+      ]
+    },
+    {
+      "version": "材料v4（本轮）",
+      "role": "assistant",
+      "change": "按官方 3.4 量表逐项重排：U6/U7 的 float32 第 K 名链升级为 2.0 档并删除重复 T13；新增“本地指标不能替代平台 E”1.0 和“Prompt 6.5 优先级重排”0.5；更新 R5 的 E=4417.415245/Prompt=6.5，不再用旧 R4 代表最新状态。",
+      "observed_result": "结构审计 T40：10 个单元、学生引用20、结果引用21、自检11.5；平台 R5 的 Prompt=6.5 仍对应 v3 材料，v4 尚未复评，不能把自检当成平台分。",
+      "evidence": [
+        "/experiments/38/output"
       ]
     }
   ],
@@ -1095,5 +1180,70 @@
     "SIMD 宽度不是越大越好：查询加载减少的收益可能被寄存器压力和编译调度抵消，必须以目标负载实测决定。",
     "错误下界比慢下界危险：任何提高剪枝率的改动先做数学符号复核和边界反例，再谈性能。",
     "本地墙钟、公开20/20、229项回归和 Docker 握手都只是分层证据，正式29用例、平台T/B/M和E只能由平台回执确认。"
-  ]
+  ],
+  "rubric_index": {
+    "note": "按官方 3.4 五个维度整理；分值为材料自检，不是平台评审。每个 unit 只映射一个维度，0.5档无结果证据。",
+    "units": [
+      {
+        "unit": "unit-protocol-localization",
+        "dimension": "问题理解与自主拆解",
+        "level": 1.5,
+        "chain": "协议失败定位→先功能后性能→Docker/公开复测"
+      },
+      {
+        "unit": "unit-topk-cutoff-challenge",
+        "dimension": "独立验证与质疑",
+        "level": 2.0,
+        "chain": "学生预测→反例检查→结果修正→多线程迁移→边界限定"
+      },
+      {
+        "unit": "unit-simd-hardware-check",
+        "dimension": "技术理解与迁移",
+        "level": 1.0,
+        "chain": "理论优势受编译器/缓存/寄存器影响→实测退化→撤回"
+      },
+      {
+        "unit": "unit-varchar-hash-semantics",
+        "dimension": "实验与反馈迭代",
+        "level": 1.5,
+        "chain": "哈希相等不等于字符串相等→真实值复核→性能/回归结果"
+      },
+      {
+        "unit": "unit-memory-time-tradeoff",
+        "dimension": "取舍与反思",
+        "level": 1.0,
+        "chain": "约1.9%内存收益对比18.7%/8.0%耗时回退→保留旧版"
+      },
+      {
+        "unit": "unit-container-retest",
+        "dimension": "独立验证与质疑",
+        "level": 1.0,
+        "chain": "本机协议通过后仍要求Docker镜像复测→两轮公开20/20"
+      },
+      {
+        "unit": "unit-local-vs-platform",
+        "dimension": "取舍与反思",
+        "level": 1.0,
+        "chain": "本地墙钟/RSS/WAL与平台T/B/M口径不同→本地未复现平台回退"
+      },
+      {
+        "unit": "unit-multiobjective-platform",
+        "dimension": "问题理解与自主拆解",
+        "level": 1.0,
+        "chain": "E与Prompt并列→R4/R5平台回执→U13按6.5短板重排优先级"
+      },
+      {
+        "unit": "unit-prompt-material-format",
+        "dimension": "问题理解与自主拆解",
+        "level": 1.0,
+        "chain": "无效状态被当作独立交付问题→按题面补摘要→平台有效5.5"
+      },
+      {
+        "unit": "unit-preserve-baseline",
+        "dimension": "取舍与反思",
+        "level": 0.5,
+        "chain": "保留已推送已验证的5475d05，在其上继续改进"
+      }
+    ]
+  }
 }
