@@ -680,7 +680,7 @@ __attribute__((target("avx2"))) static inline void qdot4_avx2(
 
 __attribute__((target("avx512f,avx512bw,avx512vnni,fma"))) static int scanRangeDot512(
     const float* base, int dim, const int8_t* qbase, const uint8_t* qsafe,
-    const double* normScaled, const int32_t* rowSum, const int32_t* rowAbs,
+    const double* lowerBase,
     const uint8_t* live, const int64_t* pks, uint64_t n, const float* q,
     const uint8_t* qquant, int k, int desc, CandOut* out) {
   if (k <= 0) return 0;
@@ -698,9 +698,7 @@ __attribute__((target("avx512f,avx512bw,avx512vnni,fma"))) static int scanRangeD
   const double qConst = qn / step2 - (double)qabs - 0.5 * (double)dim - 1e-6;
   double cutoffScaled = INFINITY;
   auto refine = [&](uint64_t rr, int D) {
-    const double lower = normScaled[rr] + qConst -
-                         2.0 * ((double)D - 128.0 * (double)rowSum[rr]) -
-                         (double)rowAbs[rr];
+    const double lower = lowerBase[rr] + qConst - 2.0 * (double)D;
     if (tk.nb == tk.k && lower > cutoffScaled) return;
     addBounded<l2sqAvx2>(tk, base + rr * stride, q, dim, pks[rr], (uint32_t)rr);
     if (tk.nb == tk.k) cutoffScaled = tk.best[tk.k - 1].d / step2;
@@ -725,14 +723,11 @@ __attribute__((target("avx512f,avx512bw,avx512vnni,fma"))) static int scanRangeD
     int D[8];
     qdot8_512(qquant, rows, dim, D);
     __m256i dv = _mm256_loadu_si256((const __m256i*)D);
-    __m256i sv = _mm256_loadu_si256((const __m256i*)(rowSum + r));
-    __m256i av = _mm256_loadu_si256((const __m256i*)(rowAbs + r));
-    __m256i core = _mm256_sub_epi32(dv, _mm256_slli_epi32(sv, 7));
-    __m512d lower = _mm512_add_pd(_mm512_loadu_pd(normScaled + r),
+    __m256i core = dv;
+    __m512d lower = _mm512_add_pd(_mm512_loadu_pd(lowerBase + r),
                                   _mm512_set1_pd(qConst));
     lower = _mm512_sub_pd(lower, _mm512_mul_pd(_mm512_set1_pd(2.0),
                                                _mm512_cvtepi32_pd(core)));
-    lower = _mm512_sub_pd(lower, _mm512_cvtepi32_pd(av));
     __mmask8 skip = 0;
     if (tk.nb == tk.k)
       skip = _mm512_cmp_pd_mask(lower, _mm512_set1_pd(cutoffScaled), _CMP_GT_OQ);
@@ -757,7 +752,7 @@ __attribute__((target("avx512f,avx512bw,avx512vnni,fma"))) static int scanRangeD
 
 __attribute__((target("avx512f,avx512bw,avx512vnni,fma"))) static int scanGatherDot512(
     const float* base, int dim, const int8_t* qbase, const uint8_t* qsafe,
-    const double* normScaled, const int32_t* rowSum, const int32_t* rowAbs,
+    const double* lowerBase,
     const uint32_t* rowids, size_t count, const int64_t* pks, const float* q,
     const uint8_t* qquant, int k, int desc, CandOut* out) {
   if (k <= 0) return 0;
@@ -773,9 +768,7 @@ __attribute__((target("avx512f,avx512bw,avx512vnni,fma"))) static int scanGather
   const double qConst = qn / step2 - (double)qabs - 0.5 * (double)dim - 1e-6;
   double cutoffScaled = INFINITY;
   auto refine = [&](uint32_t rr, int D) {
-    const double lower = normScaled[rr] + qConst -
-                         2.0 * ((double)D - 128.0 * (double)rowSum[rr]) -
-                         (double)rowAbs[rr];
+    const double lower = lowerBase[rr] + qConst - 2.0 * (double)D;
     if (tk.nb == tk.k && lower > cutoffScaled) return;
     addBounded<l2sqAvx2>(tk, base + (uint64_t)rr * stride, q, dim, pks[rr], rr);
     if (tk.nb == tk.k) cutoffScaled = tk.best[tk.k - 1].d / step2;
@@ -799,14 +792,11 @@ __attribute__((target("avx512f,avx512bw,avx512vnni,fma"))) static int scanGather
     qdot8_512(qquant, rows, dim, D);
     __m256i dv = _mm256_loadu_si256((const __m256i*)D);
     __m256i idx = _mm256_loadu_si256((const __m256i*)(rowids + i));
-    __m512d norm = _mm512_i32gather_pd(idx, normScaled, 8);
-    __m256i sv = _mm256_i32gather_epi32(rowSum, idx, 4);
-    __m256i av = _mm256_i32gather_epi32(rowAbs, idx, 4);
-    __m256i core = _mm256_sub_epi32(dv, _mm256_slli_epi32(sv, 7));
+    __m512d norm = _mm512_i32gather_pd(idx, lowerBase, 8);
+    __m256i core = dv;
     __m512d lower = _mm512_add_pd(norm, _mm512_set1_pd(qConst));
     lower = _mm512_sub_pd(lower, _mm512_mul_pd(_mm512_set1_pd(2.0),
                                                _mm512_cvtepi32_pd(core)));
-    lower = _mm512_sub_pd(lower, _mm512_cvtepi32_pd(av));
     __mmask8 skip = 0;
     if (tk.nb == tk.k)
       skip = _mm512_cmp_pd_mask(lower, _mm512_set1_pd(cutoffScaled), _CMP_GT_OQ);
@@ -831,7 +821,7 @@ __attribute__((target("avx512f,avx512bw,avx512vnni,fma"))) static int scanGather
 
 __attribute__((target("avx2,fma"))) static int scanRangeDotAvx2(
     const float* base, int dim, const int8_t* qbase, const uint8_t* qsafe,
-    const double* normScaled, const int32_t* rowSum, const int32_t* rowAbs,
+    const double* lowerBase,
     const uint8_t* live, const int64_t* pks, uint64_t n, const float* q,
     const uint8_t* qquant, int k, int desc, CandOut* out) {
   if (k <= 0) return 0;
@@ -847,9 +837,7 @@ __attribute__((target("avx2,fma"))) static int scanRangeDotAvx2(
   const double qConst = qn / step2 - (double)qabs - 0.5 * (double)dim - 1e-6;
   double cutoffScaled = INFINITY;
   auto refine = [&](uint64_t rr, int D) {
-    const double lower = normScaled[rr] + qConst -
-                         2.0 * ((double)D - 128.0 * (double)rowSum[rr]) -
-                         (double)rowAbs[rr];
+    const double lower = lowerBase[rr] + qConst - 2.0 * (double)D;
     if (tk.nb == tk.k && lower > cutoffScaled) return;
     addBounded<l2sqAvx2>(tk, base + rr * stride, q, dim, pks[rr], (uint32_t)rr);
     if (tk.nb == tk.k) cutoffScaled = tk.best[tk.k - 1].d / step2;
@@ -897,7 +885,7 @@ __attribute__((target("avx2,fma"))) static int scanRangeDotAvx2(
 
 __attribute__((target("avx2,fma"))) static int scanGatherDotAvx2(
     const float* base, int dim, const int8_t* qbase, const uint8_t* qsafe,
-    const double* normScaled, const int32_t* rowSum, const int32_t* rowAbs,
+    const double* lowerBase,
     const uint32_t* rowids, size_t count, const int64_t* pks, const float* q,
     const uint8_t* qquant, int k, int desc, CandOut* out) {
   if (k <= 0) return 0;
@@ -913,9 +901,7 @@ __attribute__((target("avx2,fma"))) static int scanGatherDotAvx2(
   const double qConst = qn / step2 - (double)qabs - 0.5 * (double)dim - 1e-6;
   double cutoffScaled = INFINITY;
   auto refine = [&](uint32_t rr, int D) {
-    const double lower = normScaled[rr] + qConst -
-                         2.0 * ((double)D - 128.0 * (double)rowSum[rr]) -
-                         (double)rowAbs[rr];
+    const double lower = lowerBase[rr] + qConst - 2.0 * (double)D;
     if (tk.nb == tk.k && lower > cutoffScaled) return;
     addBounded<l2sqAvx2>(tk, base + (uint64_t)rr * stride, q, dim, pks[rr], rr);
     if (tk.nb == tk.k) cutoffScaled = tk.best[tk.k - 1].d / step2;
@@ -984,34 +970,32 @@ int scanTopKGather(const float* base, int dim, const uint32_t* rowids, size_t co
 }
 
 int scanTopKRangeQuant(const float* base, int dim, const int8_t* qbase,
-                       const uint8_t* qsafe, const double* normScaled,
-                       const int32_t* rowSum, const int32_t* rowAbs,
+                       const uint8_t* qsafe, const double* lowerBase,
                        const uint8_t* live, const int64_t* pks, uint64_t n,
                        const float* q, const uint8_t* qquant, int k, int desc,
                        CandOut* out) {
 #if MVDB_X86
   if (g_useAvx512vnni && !desc && dim >= 64)
-    return scanRangeDot512(base, dim, qbase, qsafe, normScaled, rowSum, rowAbs, live,
+    return scanRangeDot512(base, dim, qbase, qsafe, lowerBase, live,
                            pks, n, q, qquant, k, desc, out);
   if (g_useAvx2 && !desc && dim >= 32)
-    return scanRangeDotAvx2(base, dim, qbase, qsafe, normScaled, rowSum, rowAbs, live,
+    return scanRangeDotAvx2(base, dim, qbase, qsafe, lowerBase, live,
                             pks, n, q, qquant, k, desc, out);
 #endif
   return scanTopKRange(base, dim, live, pks, n, q, k, desc, out);
 }
 
 int scanTopKGatherQuant(const float* base, int dim, const int8_t* qbase,
-                        const uint8_t* qsafe, const double* normScaled,
-                        const int32_t* rowSum, const int32_t* rowAbs,
+                        const uint8_t* qsafe, const double* lowerBase,
                         const uint32_t* rowids, size_t count, const int64_t* pks,
                         const float* q, const uint8_t* qquant, int k, int desc,
                         CandOut* out) {
 #if MVDB_X86
   if (g_useAvx512vnni && !desc && dim >= 64)
-    return scanGatherDot512(base, dim, qbase, qsafe, normScaled, rowSum, rowAbs, rowids,
+    return scanGatherDot512(base, dim, qbase, qsafe, lowerBase, rowids,
                             count, pks, q, qquant, k, desc, out);
   if (g_useAvx2 && !desc && dim >= 32)
-    return scanGatherDotAvx2(base, dim, qbase, qsafe, normScaled, rowSum, rowAbs, rowids,
+    return scanGatherDotAvx2(base, dim, qbase, qsafe, lowerBase, rowids,
                              count, pks, q, qquant, k, desc, out);
 #endif
   return scanTopKGather(base, dim, rowids, count, pks, q, k, desc, out);

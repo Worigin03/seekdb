@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
+#include <charconv>
 #include <algorithm>
 
 namespace mvdb {
@@ -214,21 +215,12 @@ bool decodeRow(const Schema& sc, const char* p, size_t n, int64_t pk, std::vecto
 
 std::string formatDouble(double d) {
   if (d == 0) d = 0;  // normalise -0
+  // to_chars general format is the shortest representation that round-trips
+  // to the same double, so no snprintf + strtod trimming loop is needed.
   char buf[64];
+  auto res = std::to_chars(buf, buf + sizeof(buf), d, std::chars_format::general);
+  if (res.ec == std::errc()) return std::string(buf, res.ptr);
   snprintf(buf, sizeof(buf), "%.17g", d);
-  // Drop trailing digits while the shorter form still parses back to the same
-  // double: this yields the shortest exact representation of the value.
-  size_t n = strlen(buf);
-  char tmp[64];
-  while (n > 1) {
-    char last = buf[n - 1];
-    if (last < '0' || last > '9') break;
-    memcpy(tmp, buf, n - 1);
-    tmp[n - 1] = 0;
-    if (strtod(tmp, nullptr) != d) break;
-    n--;
-    buf[n] = 0;
-  }
   return std::string(buf);
 }
 
