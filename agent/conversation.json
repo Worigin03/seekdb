@@ -1,5 +1,5 @@
 {
-  "summary": "本材料是 round7 修正提交 f51d84ef881480a142a303f7cc2f2260db2d54ec 对应的真实学习记录，按 agent-learning-evidence-v3-unbounded 的 0.5/1/1.5/2.0 档位整理。R7 平台回执确认 v6 提交 0438941c3e177c3b4b3c02ebe0989e6a896f2602 的 E=3384.485949、Agent Prompt=8.500000，MySQL 正式用例通过；E 相对 R6 的 4442.851450 下降 1058.365501（约 -23.82%），Prompt 提高 0.5。学生没有把本地 to_chars 的 -17.2% 查询墙钟当成平台收益，而是要求修正；助手核对到 b04e855 相对父 1778fc2 只有 6 个源码文件，平台未给 T/B/M 明细，无法拆分 to_chars 与折叠下界的贡献，因此整体回退性能源码、保留 v6 材料，得到 f51d84e。重建二进制 SHA-256 回到 71e12d4244eabb6e9e5faa72ee96c8d77557a361fff32d4c65d62d8b3e92f598，本地 229/229、公开 20/20 通过；f51 的平台回执尚未出现，不能把历史 4442 当作本轮 E。本材料 v7 只新增真实的平台回归、回退与双目标拆分证据，未改源码；自检 raw=19.0 只用于查漏，不是平台分。",
+  "summary": "本材料是 round7 双目标修正的材料版本：源码基线为 f51d84ef881480a142a303f7cc2f2260db2d54ec，该提交把 b04e85542579f189da6d63a656b8e0a9efefbeb7 的 6 个性能源码文件回退到 1778fc217a30145bcf542a53f949037c54763401，agent/conversation.json 保留 v6 的 92,090 字节内容；本次材料提交只改 conversation.json，不改源码。R7 平台回执确认 v6 提交 0438941c3e177c3b4b3c02ebe0989e6a896f2602 的 E=3384.485949、Agent Prompt=8.500000，MySQL 正式用例通过；E 相对 R6 的 4442.851450 下降 1058.365501（约 -23.82%），Prompt 提高 0.5。学生没有把本地 to_chars 的 -17.2% 查询墙钟当成平台收益，而是要求修正；助手核对到 b04e855 相对父 1778fc2 只有 6 个源码文件，平台未给 T/B/M 明细，无法拆分 to_chars 与折叠下界的贡献，因此整体回退性能源码、保留 v6 材料，得到 f51d84e。重建二进制 SHA-256 回到 71e12d4244eabb6e9e5faa72ee96c8d77557a361fff32d4c65d62d8b3e92f598，本地 229/229、公开 20/20 通过；f51 的平台回执尚未出现，不能把历史 4442 当作本轮 E。本材料 v7 只新增真实的平台回归、回退与双目标拆分证据，未改源码；自检 raw=19.0 只用于查漏，不是平台分。",
   "synthetic": false,
   "scope": {
     "baseline_commit": "a3616b007a2aa7f3e2289637550b492c9bcad367",
@@ -11,7 +11,8 @@
     "current_candidate_base": "f51d84ef881480a142a303f7cc2f2260db2d54ec",
     "round5_status": "round5 源码与材料已推送到 9761c77（源码提交 689eaad，父 5475d05），平台已返回 E=4417.415245、Prompt=6.500000；本材料 v5 尚未提测复评。",
     "round6_status": "v6 提交 0438941 已由平台评测：E=3384.485949、Prompt=8.500000，MySQL 正式用例通过；E 从 R6 的 4442.851450 下降约 23.82%。",
-    "round7_status": "f51d84e 已把 b04e855 的 6 个性能源码文件回退到 1778fc2，agent/conversation.json 保持 v6 字节不变；本地 229/229、公开 20/20 通过，平台尚未复测。"
+    "round7_status": "f51d84e 已把 b04e855 的 6 个性能源码文件回退到 1778fc2，agent/conversation.json 保持 v6 字节不变；本地 229/229、公开 20/20 通过，平台尚未复测。",
+    "material_commit_note": "本材料提交只修改 agent/conversation.json；源码沿用 f51d84e 的已回退版本，不随材料提交改变。"
   },
   "conversations": [
     {
@@ -958,7 +959,7 @@
       ],
       "command": "python3 材料审计：解析 RFC6901 pointer、原文包含、240 字符上限、重复引用、五维覆盖、UTF-8 合法 JSON、128 KiB 上限",
       "setup": "v7 材料，源码保持 f51。",
-      "output": "AUDIT_PASS units=15 student_refs=31 result_refs=35 raw=19.0 size=108770",
+      "output": "AUDIT_PASS units=15 student_refs=31 result_refs=35 raw=19.0 size=109110",
       "scope": "结构审计只证明引用可定位和档位字段自洽，不证明平台评分。"
     }
   ],
@@ -1425,7 +1426,7 @@
         },
         {
           "pointer": "/experiments/46/output",
-          "quote": "AUDIT_PASS units=15 student_refs=31 result_refs=35 raw=19.0 size=108770"
+          "quote": "AUDIT_PASS units=15 student_refs=31 result_refs=35 raw=19.0 size=109110"
         }
       ]
     },
@@ -1451,7 +1452,7 @@
         },
         {
           "pointer": "/experiments/46/output",
-          "quote": "AUDIT_PASS units=15 student_refs=31 result_refs=35 raw=19.0 size=108770"
+          "quote": "AUDIT_PASS units=15 student_refs=31 result_refs=35 raw=19.0 size=109110"
         }
       ]
     },
@@ -1477,7 +1478,7 @@
         },
         {
           "pointer": "/experiments/46/output",
-          "quote": "AUDIT_PASS units=15 student_refs=31 result_refs=35 raw=19.0 size=108770"
+          "quote": "AUDIT_PASS units=15 student_refs=31 result_refs=35 raw=19.0 size=109110"
         }
       ]
     }
