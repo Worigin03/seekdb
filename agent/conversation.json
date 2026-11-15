@@ -1,18 +1,19 @@
 {
-  "summary": "本材料是 round7 双目标修正的材料版本：源码基线为 f51d84ef881480a142a303f7cc2f2260db2d54ec，该提交把 b04e85542579f189da6d63a656b8e0a9efefbeb7 的 6 个性能源码文件回退到 1778fc217a30145bcf542a53f949037c54763401，agent/conversation.json 保留 v6 的 92,090 字节内容；本次材料提交只改 conversation.json，不改源码。R7 平台回执确认 v6 提交 0438941c3e177c3b4b3c02ebe0989e6a896f2602 的 E=3384.485949、Agent Prompt=8.500000，MySQL 正式用例通过；E 相对 R6 的 4442.851450 下降 1058.365501（约 -23.82%），Prompt 提高 0.5。学生没有把本地 to_chars 的 -17.2% 查询墙钟当成平台收益，而是要求修正；助手核对到 b04e855 相对父 1778fc2 只有 6 个源码文件，平台未给 T/B/M 明细，无法拆分 to_chars 与折叠下界的贡献，因此整体回退性能源码、保留 v6 材料，得到 f51d84e。重建二进制 SHA-256 回到 71e12d4244eabb6e9e5faa72ee96c8d77557a361fff32d4c65d62d8b3e92f598，本地 229/229、公开 20/20 通过；f51 的平台回执尚未出现，不能把历史 4442 当作本轮 E。本材料 v7 只新增真实的平台回归、回退与双目标拆分证据，未改源码；自检 raw=19.0 只用于查漏，不是平台分。",
+  "summary": "本材料是 round7 v8 双目标候选的真实记录：源码为 f51d84ef881480a142a303f7cc2f2260db2d54ec（已把 b04e855 的 6 个性能文件回退到 1778fc2）再加单变量 types.cpp::formatDouble 的 std::to_chars 改动；不改折叠下界、不改 Dockerfile、不改其他源码。R7 平台回执确认 v6 提交 0438941c3e177c3b4b3c02ebe0989e6a896f2602 的 E=3384.485949、Agent Prompt=8.500000，MySQL 正式用例通过；E 相对 R6 的 4442.851450 下降 1058.365501（约 -23.82%），Prompt 提高 0.5。v6 同时改 to_chars 与折叠下界，平台未给 T/B/M，无法拆分；本轮因此只恢复 to_chars，保留其余性能路径为 1778fc2，避免重复 v6 的多变量风险。本地证据：229/229、公开 20/20、常规差分 82 查询/820 行 ID 全一致 max_abs=0；同机交替 3 轮查询 plain 中位 50/50/49 µs，base 56/54/65 µs，filtered 35/36/34 µs，base 39/41/45 µs。这些只是本地诊断，不是平台 E，也不能保证平台一定提高；v8 的平台回执尚未产生。材料 v8 自检 raw=20.5 只用于查漏。",
   "synthetic": false,
   "scope": {
     "baseline_commit": "a3616b007a2aa7f3e2289637550b492c9bcad367",
     "protocol_package_commit": "f4d4e26653af823a7601668802f80e374ad6643c",
     "material_path": "agent/conversation.json",
-    "coverage": "覆盖 U1–U14 的真实用户发言、参赛者复盘、平台回执 R1–R6 和工具结果 T1–T43；重点记录协议定位、float32 第 K 名反例、多线程迁移、VARCHAR 哈希语义、本地指标与平台 E 的差异、round4/round5 量化与 VNNI、AVX2 回退、Docker 复测、以及 v6 的结果格式化固定开销。 新增 R7 平台回归、源码回退、f51 构建与测试、材料-only v7 的审计。",
+    "coverage": "覆盖 U1–U14 的真实用户发言、参赛者复盘、平台回执 R1–R6 和工具结果 T1–T43；重点记录协议定位、float32 第 K 名反例、多线程迁移、VARCHAR 哈希语义、本地指标与平台 E 的差异、round4/round5 量化与 VNNI、AVX2 回退、Docker 复测、以及 v6 的结果格式化固定开销。 新增 R7 平台回归、源码回退、f51 构建与测试、材料-only v7 的审计。 新增 v8 单变量 to_chars 的编译、性能与回归证据。",
     "attribution": "本地代码修改、数学复核、自动化测试、基准和 Docker 构建由助手执行，材料中明确标为 tool/assistant。学生原文只使用 U1–U14 中真实出现的句子；U6/U7 是学生自己写的预测、通过/拒绝标准和结果解释，U10 是镜像复测要求，U11/U13/U14 是双目标、优先级与继续优化要求，U12 是保留已推送基线的取舍。未把助手的点积下界推导、符号纠错、VNNI 实现或 to_chars 修改伪装成学生逐字贡献；这些只作为 result_evidence。 R7 的 E/Prompt 是平台回执；回退源码、重建、测试和材料编辑由助手执行，学生只对“进一步修正”和“同时提高两题”作真实决策。",
     "redaction": "命令和输出省略本机绝对路径、凭据及不相关日志。用户发言摘录保留原文。",
-    "current_candidate_base": "f51d84ef881480a142a303f7cc2f2260db2d54ec",
+    "current_candidate_base": "f51d84ef881480a142a303f7cc2f2260db2d54ec + types.cpp to_chars (single variable only; fold lower bound not applied)",
     "round5_status": "round5 源码与材料已推送到 9761c77（源码提交 689eaad，父 5475d05），平台已返回 E=4417.415245、Prompt=6.500000；本材料 v5 尚未提测复评。",
     "round6_status": "v6 提交 0438941 已由平台评测：E=3384.485949、Prompt=8.500000，MySQL 正式用例通过；E 从 R6 的 4442.851450 下降约 23.82%。",
     "round7_status": "f51d84e 已把 b04e855 的 6 个性能源码文件回退到 1778fc2，agent/conversation.json 保持 v6 字节不变；本地 229/229、公开 20/20 通过，平台尚未复测。",
-    "material_commit_note": "本材料提交只修改 agent/conversation.json；源码沿用 f51d84e 的已回退版本，不随材料提交改变。"
+    "material_commit_note": "本材料提交只修改 agent/conversation.json；源码沿用 f51d84e 的已回退版本，不随材料提交改变。",
+    "round8_status": "v8 候选只在 f51 源码上恢复 to_chars；本地 229/229、公开20/20、差分0；平台尚未复测。"
   },
   "conversations": [
     {
@@ -961,6 +962,60 @@
       "setup": "v7 材料，源码保持 f51。",
       "output": "AUDIT_PASS units=15 student_refs=31 result_refs=35 raw=19.0 size=109110",
       "scope": "结构审计只证明引用可定位和档位字段自洽，不证明平台评分。"
+    },
+    {
+      "id": "T49",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "U17",
+        "U18",
+        "T52"
+      ],
+      "command": "MVDB_BIN=minivectordb-tochars python3 tests/test_minivectordb.py / test_spec.py / test_formal.py / test_edge.py / test_extra.py; CASE_DIR=... python3 tests/run_public_cases.py",
+      "setup": "v8 源码：f51 基线 + 仅 types.cpp to_chars；BIN SHA-256=ed3d54a1295f96167fb74a5bd491c9b67689ebb3da1d491324f4e9dbac7580d4。",
+      "output": "test_minivectordb.py 69/69；test_spec.py 35/35；test_formal.py 48/48；test_edge.py 53/53；test_extra.py 24/24；合计 229/229；公开 20/20 cases passed。",
+      "scope": "本地正确性；不等于平台 MySQL 正式 29 用例。"
+    },
+    {
+      "id": "T50",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "T49",
+        "T51"
+      ],
+      "command": "python3 /tmp/topk_diff_v8.py",
+      "setup": "N=5000、D=128、82 查询、K=10；baseline minivectordb-v7-base vs tochars minivectordb-tochars。",
+      "output": "queries 82 rows 820 bad 0 max_abs 0.0；ID 全部一致。",
+      "scope": "本地常规差分；未做 7 组边界差分。"
+    },
+    {
+      "id": "T51",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "T49",
+        "T50"
+      ],
+      "command": "MVDB_BIN=... python3 tests/bench_latency.py（base/tochars 交替 3 轮，N=10000,D=128,Q=1000,K=10）",
+      "setup": "同一数据生成与同机交替；BASE SHA-256=71e12d42…，tochars SHA-256=ed3d54a1…。",
+      "output": "query total: base 0.1107/0.0946/0.0909 s；tochars 0.0850/0.0852/0.0848 s。plain median: base 65/54/56 µs；tochars 50/50/49 µs。filtered median: base 46/41/39 µs；tochars 35/36/34 µs。写入无稳定变化。",
+      "scope": "本地查询墙钟与服务器 stderr 微秒，不是平台 E。"
+    },
+    {
+      "id": "T52",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "T49",
+        "T50",
+        "T51"
+      ],
+      "command": "python3 材料审计：RFC6901 pointer、原文包含、240字符、重复引用、五维、UTF-8、JSON、128 KiB",
+      "setup": "v8 材料；源码为 to_chars 候选。",
+      "output": "AUDIT_PASS units=16 student_refs=33 result_refs=39 raw=20.5 size=114826",
+      "scope": "结构审计只证明引用可定位和档位字段自洽，不证明平台评分。"
     }
   ],
   "retrospective": [
@@ -1058,7 +1113,9 @@
     "Docker 镜像 minivectordb:round6-fmt 的握手与公开 20/20 是本地诊断，镜像 manifest list sha256:97ea... 可作为复现标识，但不是平台准入或平台分数。",
     "R7 的 E=3384.485949 是 v6 提交 0438941 的平台回执；b04e855 的 to_chars 与折叠下界没有独立平台回执，不能声称哪一处单独造成 23.82% 回退。",
     "f51d84e 的回退版本已在本地通过 229/229 与公开 20/20，但平台尚未给出 f51 的新 E/Prompt；历史 4442.851450 不能冒充本轮结果。",
-    "v7 只改材料、不改源码；即使平台 Prompt 提高，E 仍取决于 f51 源码和平台环境，不能把材料自检 raw=19.0 当作双升证明。"
+    "v7 只改材料、不改源码；即使平台 Prompt 提高，E 仍取决于 f51 源码和平台环境，不能把材料自检 raw=19.0 当作双升证明。",
+    "v8 只恢复 to_chars 的单变量候选尚未获得平台回执；本地 plain 中位 50 vs base 56 µs 不能直接换算平台 E，也不能证明平台一定优于 f51。",
+    "v6 的 E 回退是 to_chars+fold 的组合，平台没有 T/B/M，无法证明单拆 to_chars 后平台收益；若 v8 回退，应立即提交不含源码改动的 v7 材料版本。"
   ],
   "rule_version": "agent-learning-evidence-v3-unbounded",
   "material_type": "real_learning_records",
@@ -1481,6 +1538,40 @@
           "quote": "AUDIT_PASS units=15 student_refs=31 result_refs=35 raw=19.0 size=109110"
         }
       ]
+    },
+    {
+      "id": "unit-tochars-single-variable",
+      "dimension": "实验与反馈迭代",
+      "score": 1.5,
+      "reason": "v6 的 to_chars+折叠下界让平台 E 下降，但无法拆分。学生要求快速提高且保住分数；助手只恢复 to_chars，保留 f51 其余性能路径，先用同机交替确认 plain/filtered 查询中位稳定下降，再跑 229/20 和 820 行差分。没有把本地 µs 当成平台 E，也没有把折叠下界重新叠加。",
+      "student_evidence": [
+        {
+          "pointer": "/conversations/24/content",
+          "quote": "还有没有办法同时提高赛题一与赛题二分数的方法，请你仔细从其他角度思考核对，最后再检查一下是否能顺利提升两道题的分数"
+        },
+        {
+          "pointer": "/conversations/26/content",
+          "quote": "按照你的想法去做，尽可能提高两道赛题的分数"
+        }
+      ],
+      "result_evidence": [
+        {
+          "pointer": "/experiments/47/output",
+          "quote": "test_minivectordb.py 69/69；test_spec.py 35/35；test_formal.py 48/48；test_edge.py 53/53；test_extra.py 24/24；合计 229/229；公开 20/20 cases passed。"
+        },
+        {
+          "pointer": "/experiments/48/output",
+          "quote": "queries 82 rows 820 bad 0 max_abs 0.0；ID 全部一致。"
+        },
+        {
+          "pointer": "/experiments/49/output",
+          "quote": "query total: base 0.1107/0.0946/0.0909 s；tochars 0.0850/0.0852/0.0848 s。plain median: base 65/54/56 µs；tochars 50/50/49 µs。filtered median: base 46/41/39 µs；tochars 35/36/34 µs。写入无稳定变化。"
+        },
+        {
+          "pointer": "/experiments/50/output",
+          "quote": "AUDIT_PASS units=16 student_refs=33 result_refs=39 raw=20.5 size=114826"
+        }
+      ]
     }
   ],
   "evidence_totals": {
@@ -1488,11 +1579,11 @@
       "问题理解与自主拆解": 4.0,
       "技术理解与迁移": 1.0,
       "独立验证与质疑": 5.0,
-      "实验与反馈迭代": 5.5,
+      "实验与反馈迭代": 7.0,
       "取舍与反思": 3.5
     },
-    "raw_score": 19.0,
-    "note": "按公开 v3 量表对材料内证据的保守整理，不是平台已给分；v7 新增的 4 个单元均使用真实平台回执、真实 git/build/test 输出和本次真实用户发言；平台分尚未产生。"
+    "raw_score": 20.5,
+    "note": "按公开 v3 量表保守整理，不是平台分；新增单元只使用真实本地构建、测试与交替基准，平台 E/Prompt 尚未产生。"
   },
   "prompt_design": [
     {
@@ -1558,6 +1649,16 @@
       "evidence": [
         "/experiments/46/output"
       ]
+    },
+    {
+      "version": "材料v8（round7-tochars）",
+      "role": "assistant",
+      "change": "在 v7 材料上增加“只恢复 to_chars”的单变量候选证据：229/20、820行差分、3轮交替plain/filtered中位；不改折叠下界。",
+      "observed_result": "平台尚未回执；本地查询中位稳定下降，但只作为诊断。",
+      "evidence": [
+        "/experiments/47/output",
+        "/experiments/49/output"
+      ]
     }
   ],
   "learning_plan": {
@@ -1612,6 +1713,16 @@
         "/platform_feedback/6/performance_output",
         "/experiments/43/output",
         "/experiments/44/output"
+      ]
+    },
+    {
+      "role": "assistant",
+      "item": "v8 单变量 to_chars",
+      "decision": "保留，作为下一候选；若平台 E 不升，回退到 v7 材料 + f51 源码。",
+      "evidence": [
+        "/experiments/47/output",
+        "/experiments/48/output",
+        "/experiments/49/output"
       ]
     }
   ],
@@ -1715,6 +1826,12 @@
         "dimension": "实验与反馈迭代",
         "level": 1.0,
         "chain": "R7 8.5→新增回退证据→结构审计→待平台复测"
+      },
+      {
+        "unit": "unit-tochars-single-variable",
+        "dimension": "实验与反馈迭代",
+        "level": 1.5,
+        "chain": "v6多变量回退→只恢复to_chars→同机交替→229/20→820行差分→平台待测"
       }
     ]
   }
