@@ -1,5 +1,5 @@
 {
-  "summary": "本材料是 round7 v8 双目标候选的真实记录：源码为 f51d84ef881480a142a303f7cc2f2260db2d54ec（已把 b04e855 的 6 个性能文件回退到 1778fc2）再加单变量 types.cpp::formatDouble 的 std::to_chars 改动；不改折叠下界、不改 Dockerfile、不改其他源码。R7 平台回执确认 v6 提交 0438941c3e177c3b4b3c02ebe0989e6a896f2602 的 E=3384.485949、Agent Prompt=8.500000，MySQL 正式用例通过；E 相对 R6 的 4442.851450 下降 1058.365501（约 -23.82%），Prompt 提高 0.5。v6 同时改 to_chars 与折叠下界，平台未给 T/B/M，无法拆分；本轮因此只恢复 to_chars，保留其余性能路径为 1778fc2，避免重复 v6 的多变量风险。本地证据：229/229、公开 20/20、常规差分 82 查询/820 行 ID 全一致 max_abs=0；同机交替 3 轮查询 plain 中位 50/50/49 µs，base 56/54/65 µs，filtered 35/36/34 µs，base 39/41/45 µs。这些只是本地诊断，不是平台 E，也不能保证平台一定提高；v8 的平台回执尚未产生。材料 v8 自检 raw=20.5 只用于查漏。",
+  "summary": "round10 双目标候选：以 v8 的 to_chars 源码与 Prompt=8.5 材料为基线，新增精确 L2 部分距离早停；只修改 mini-vectordb/src/simd.cpp，平方距离部分和严格超过当前第 K 名 cutoff 才提前返回，保留完整 double 计算、主键决胜与 DESC 路径。追加真实的 16/32/64 维频率对照、TopK 差分和功能验证；本地查询收益不等于平台 E。",
   "synthetic": false,
   "scope": {
     "baseline_commit": "a3616b007a2aa7f3e2289637550b492c9bcad367",
@@ -13,7 +13,9 @@
     "round6_status": "v6 提交 0438941 已由平台评测：E=3384.485949、Prompt=8.500000，MySQL 正式用例通过；E 从 R6 的 4442.851450 下降约 23.82%。",
     "round7_status": "f51d84e 已把 b04e855 的 6 个性能源码文件回退到 1778fc2，agent/conversation.json 保持 v6 字节不变；本地 229/229、公开 20/20 通过，平台尚未复测。",
     "material_commit_note": "本材料提交只修改 agent/conversation.json；源码沿用 f51d84e 的已回退版本，不随材料提交改变。",
-    "round8_status": "v8 候选只在 f51 源码上恢复 to_chars；本地 229/229、公开20/20、差分0；平台尚未复测。"
+    "round8_status": "v8 候选只在 f51 源码上恢复 to_chars；本地 229/229、公开20/20、差分0；平台尚未复测。",
+    "candidate_base_commit": "5b3dd2c4f650ec51b24c1cce3294c8de08e284ec",
+    "algorithm_change": "l2sqExactAvx2 每 32 维检查非负部分平方和；仅 ascending TopK 且已有 K 个候选时启用。"
   },
   "conversations": [
     {
@@ -287,6 +289,38 @@
         "T48"
       ],
       "content": "按双变量顺序执行：v7 只新增 R7 回退证据、f51 构建/测试和双目标拆分，不改源码；材料结构审计检查 RFC6901 指针、原文包含、重复引用、五维覆盖、UTF-8、JSON 合法和 128 KiB 上限。平台分仍未产生，自检只用于查漏。"
+    },
+    {
+      "id": "U19",
+      "role": "user",
+      "content": "性能原始分 | — | 3233.454349 | 性能评测完成；原始指标 E = 3233.454349\nAgent Prompt 原始分 | — | 8 | Agent Prompt评测完成；原始分 = 8.000000\nv9最新评测结果，又浪费我一次机会，请你进一步提高赛题一的分数并且也要提高赛题二的分数"
+    },
+    {
+      "id": "A19",
+      "role": "assistant",
+      "record_type": "summary",
+      "related": [
+        "R8",
+        "R9"
+      ],
+      "content": "v9 回执同时低于 v8，不能把 1778 历史高分当作当前平台保证。先恢复 v8 树，再只引入可证明无损的 L2 部分距离早停；早停仅用于排除不可能进入 ascending TopK 的行，最终入选行仍按原顺序完成 double 距离计算。"
+    },
+    {
+      "id": "U20",
+      "role": "user",
+      "content": "你要知道现在的分数我无法晋级，所以不能只是保住现有分数就行。赛题一必须要超过现有分数，哪怕做算法级改动也没事，请你进一步在满足要求的情况下尽可能提升赛题一和赛题二的分数"
+    },
+    {
+      "id": "A20",
+      "role": "assistant",
+      "record_type": "summary",
+      "related": [
+        "T53",
+        "T54",
+        "T55",
+        "T56"
+      ],
+      "content": "实现并筛选精确 L2 早停：16 维检查过慢，改做 32/64 维对照，最终保留 32 维。最终候选通过 229/229、公开 20/20、960 组结果集差分及 cutoff 对抗测试；四轮 Q=5000 服务端查询均低于基线。材料只追加这两条真实链，平台 E/Prompt 仍待提测。"
     }
   ],
   "platform_feedback": [
@@ -375,6 +409,29 @@
       "performance_output": "性能评测完成；原始指标 E = 3384.485949",
       "prompt_output": "Agent Prompt评测完成；原始分 = 8.500000",
       "context": "对应 v6 提交 0438941c3e177c3b4b3c02ebe0989e6a896f2602。MySQL 正式用例通过；E 相对 R6 的 4442.851450 下降 1058.365501（约 -23.82%），Prompt 提高 0.5。平台未提供 T/B/M 明细，也未把 E 归因到单处源码，因此不能声称是 to_chars 或折叠下界单独造成。"
+    },
+    {
+      "id": "R8",
+      "source": "参赛者转述的历史平台回执",
+      "related": [
+        "U18",
+        "T49",
+        "T50",
+        "T51"
+      ],
+      "performance_output": "性能评测完成；原始指标 E = 4428.266490",
+      "prompt_output": "Agent Prompt评测完成；原始分 = 8.500000",
+      "context": "对应 v8 bbaedbb7808d9d225f4da07c88b2f55f2ee675f4，平台 id=47254600，MySQL 正式用例通过；这是早停候选的已知对照，不是 round10 新回执。"
+    },
+    {
+      "id": "R9",
+      "source": "参赛者转述的最新平台回执",
+      "related": [
+        "U19"
+      ],
+      "performance_output": "性能评测完成；原始指标 E = 3233.454349",
+      "prompt_output": "Agent Prompt评测完成；原始分 = 8.000000",
+      "context": "对应 v9 1bfcafb04b9647f174328d2aa1d980ec9327b39d；用户明确转述该结果。平台未提供 T/B/M，不能据此臆断具体机器或单行源码原因。"
     }
   ],
   "experiments": [
@@ -1016,6 +1073,71 @@
       "setup": "v8 材料；源码为 to_chars 候选。",
       "output": "AUDIT_PASS units=16 student_refs=33 result_refs=39 raw=20.5 size=114826",
       "scope": "结构审计只证明引用可定位和档位字段自洽，不证明平台评分。"
+    },
+    {
+      "id": "T53",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "U19",
+        "U20"
+      ],
+      "command": "MVDB_BIN=base/early16 N=10000 Q=1000 python3 tests/bench.py，同机交替 3 轮",
+      "setup": "初版每 16 维检查部分 double 平方和；其他源码保持 v8。",
+      "output": "16 维检查候选查询 0.076/0.077/0.089 s，基线 0.058/0.068/0.073 s；候选更慢，未保留。",
+      "scope": "本地客户端墙钟；用于否决过密检查，不是平台 E。"
+    },
+    {
+      "id": "T54",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "U20",
+        "A20"
+      ],
+      "command": "最终 early32：五套件、公开用例、960 组随机 TopK 差分及 cutoff 对抗差分",
+      "setup": "v8 + 仅 simd.cpp 的 32 维精确早停；K=1/10/50，含过滤、并列、首/末维度差异。",
+      "output": "最终 32 维候选：五套件 69+35+48+53+24=229/229，公开 20/20；960 组 TopK 结果集、19520 行与基线逐行一致；对抗边界 24 组、966 行一致。",
+      "scope": "本地正确性与结果等价证据；不等于平台 MySQL 正式用例。"
+    },
+    {
+      "id": "T55",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "U20",
+        "A20"
+      ],
+      "command": "MVDB_BIN=base/early32 N=10000 Q=5000 python3 tests/bench_latency.py，同机交替 4 轮",
+      "setup": "128 维、10000 行、K=10，一半 filtered；比较服务端逐语句统计。",
+      "output": "Q=5000 四轮服务端查询总时间：基线 94.3/99.6/111.0/92.2 µs/query，32 维早停 90.0/95.1/102.3/89.9 µs/query；每轮分别约降低 4.6%、4.5%、7.8%、2.5%。",
+      "scope": "本地服务端延迟；不能换算或冒充平台 E。"
+    },
+    {
+      "id": "T56",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "U19",
+        "A20"
+      ],
+      "command": "early32 与 early64 的服务端对照及最终频率选择",
+      "setup": "同一 early-exit 数学规则，仅改变检查频率；保留全部轮次。",
+      "output": "32/64 维候选均避免 16 维过密检查；综合多轮 plain、filtered 中位数与 Q=5000 总时间，选择 32 维。16 维过慢版本与 64 维备选均不进入最终提交。",
+      "scope": "本地参数取舍；最终平台收益仍待回执。"
+    },
+    {
+      "id": "T57",
+      "role": "tool",
+      "record_type": "summary",
+      "related": [
+        "U20",
+        "A20"
+      ],
+      "command": "docker build --platform linux/amd64 -t minivectordb:round10-early32 .；容器内五套件与公开用例",
+      "setup": "Windows Docker，同平台 Dockerfile 与编译参数。",
+      "output": "Docker manifest list sha256:abaa9060680a2e1d48ae430a1cde59ce56ca34ea8ac9fa33b479536436c15326；容器内五套件 69+35+48+53+24=229/229；公开 20/20 cases passed。",
+      "scope": "容器本地验证，不等于平台回执。"
     }
   ],
   "retrospective": [
@@ -1091,6 +1213,19 @@
         "T47"
       ],
       "content": "本轮的关键不是再找一个更快的本地内核，而是承认本地查询收益没有在平台工作负载上兑现。R7 的 E 下降 23.82% 与 MySQL 通过同时成立，说明准入正确性没坏，但性能归因不能靠本地 -17.2% 顶替。平台没有 T/B/M，就无法把两处改动拆分；在只有一次修正机会的前提下，回退到此前真实得到 4442 的源码，同时保留 Prompt 8.5 材料，是风险最低的版本选择。后续若再试性能，只能单变量改动，并以平台回执为准。"
+    },
+    {
+      "id": "A20-retrospective",
+      "role": "assistant",
+      "record_type": "retrospective",
+      "related": [
+        "U20",
+        "T53",
+        "T54",
+        "T55",
+        "T56"
+      ],
+      "content": "精确早停的安全性来自平方项非负与严格大于 cutoff，而不是来自近似召回；部分和相等时继续计算，主键决胜不变。16 维版本因检查开销回退，说明算法减少维度计算仍要与分支/归约成本一起评估。最终只报告本地多轮结果，平台 E 和 Prompt 必须由新回执确认。"
     }
   ],
   "limitations": [
@@ -1115,7 +1250,9 @@
     "f51d84e 的回退版本已在本地通过 229/229 与公开 20/20，但平台尚未给出 f51 的新 E/Prompt；历史 4442.851450 不能冒充本轮结果。",
     "v7 只改材料、不改源码；即使平台 Prompt 提高，E 仍取决于 f51 源码和平台环境，不能把材料自检 raw=19.0 当作双升证明。",
     "v8 只恢复 to_chars 的单变量候选尚未获得平台回执；本地 plain 中位 50 vs base 56 µs 不能直接换算平台 E，也不能证明平台一定优于 f51。",
-    "v6 的 E 回退是 to_chars+fold 的组合，平台没有 T/B/M，无法证明单拆 to_chars 后平台收益；若 v8 回退，应立即提交不含源码改动的 v7 材料版本。"
+    "v6 的 E 回退是 to_chars+fold 的组合，平台没有 T/B/M，无法证明单拆 to_chars 后平台收益；若 v8 回退，应立即提交不含源码改动的 v7 材料版本。",
+    "round10 的 32 维早停在本地 Q=5000 四轮查询均更快，但平台机器、编译器与 T/B/M 权重不同，不能预先承诺 E 超过 4428.266490。",
+    "材料自检 raw=23.5 只表示 18 个单元的字段合计；v9 已证明自检提高不保证平台 Prompt 提高，round10 仍需平台复评。"
   ],
   "rule_version": "agent-learning-evidence-v3-unbounded",
   "material_type": "real_learning_records",
@@ -1572,18 +1709,62 @@
           "quote": "AUDIT_PASS units=16 student_refs=33 result_refs=39 raw=20.5 size=114826"
         }
       ]
+    },
+    {
+      "id": "unit-exact-early-termination",
+      "dimension": "技术理解与迁移",
+      "score": 1.5,
+      "reason": "学生明确允许算法级改动；将非负 L2 平方项转化为不损失 TopK 的部分距离剪枝，并用等价性测试约束实现。",
+      "student_evidence": [
+        {
+          "pointer": "/conversations/30/content",
+          "quote": "赛题一必须要超过现有分数，哪怕做算法级改动也没事"
+        }
+      ],
+      "result_evidence": [
+        {
+          "pointer": "/experiments/52/output",
+          "quote": "960 组 TopK 结果集、19520 行与基线逐行一致；对抗边界 24 组、966 行一致。"
+        },
+        {
+          "pointer": "/experiments/53/output",
+          "quote": "每轮分别约降低 4.6%、4.5%、7.8%、2.5%。"
+        }
+      ]
+    },
+    {
+      "id": "unit-early-exit-iteration",
+      "dimension": "实验与反馈迭代",
+      "score": 1.5,
+      "reason": "初版检查过密导致回退后，没有隐藏失败；通过 32/64 维对照调整检查成本并保留全部验证结果。",
+      "student_evidence": [
+        {
+          "pointer": "/conversations/28/content",
+          "quote": "v9最新评测结果，又浪费我一次机会，请你进一步提高赛题一的分数并且也要提高赛题二的分数"
+        }
+      ],
+      "result_evidence": [
+        {
+          "pointer": "/experiments/51/output",
+          "quote": "16 维检查候选查询 0.076/0.077/0.089 s，基线 0.058/0.068/0.073 s；候选更慢，未保留。"
+        },
+        {
+          "pointer": "/experiments/54/output",
+          "quote": "综合多轮 plain、filtered 中位数与 Q=5000 总时间，选择 32 维。"
+        }
+      ]
     }
   ],
   "evidence_totals": {
     "dimensions": {
       "问题理解与自主拆解": 4.0,
-      "技术理解与迁移": 1.0,
+      "技术理解与迁移": 2.5,
       "独立验证与质疑": 5.0,
-      "实验与反馈迭代": 7.0,
+      "实验与反馈迭代": 8.5,
       "取舍与反思": 3.5
     },
-    "raw_score": 20.5,
-    "note": "按公开 v3 量表保守整理，不是平台分；新增单元只使用真实本地构建、测试与交替基准，平台 E/Prompt 尚未产生。"
+    "raw_score": 23.5,
+    "note": "按公开 v3 量表保守整理，不是平台分；新增单元使用真实算法、测试与交替基准，平台 E/Prompt 尚需回执。"
   },
   "prompt_design": [
     {
@@ -1659,6 +1840,17 @@
         "/experiments/47/output",
         "/experiments/49/output"
       ]
+    },
+    {
+      "version": "round10",
+      "role": "assistant",
+      "change": "以平台 Prompt=8.5 的 v8 材料为底，仅追加精确早停技术链和频率迭代链；不沿用 v9 的 18 单元材料。",
+      "observed_result": "本地结构审计与算法验证完成；平台 Prompt 待测。",
+      "evidence": [
+        "/experiments/52/output",
+        "/experiments/53/output",
+        "/experiments/54/output"
+      ]
     }
   ],
   "learning_plan": {
@@ -1723,6 +1915,17 @@
         "/experiments/47/output",
         "/experiments/48/output",
         "/experiments/49/output"
+      ]
+    },
+    {
+      "role": "assistant",
+      "item": "精确 L2 早停候选",
+      "decision": "保留 32 维版本作为 round10 候选；16 维版本因更慢拒绝，完整正确性与差分通过后提交，平台结果待测。",
+      "evidence": [
+        "/experiments/51/output",
+        "/experiments/52/output",
+        "/experiments/53/output",
+        "/experiments/54/output"
       ]
     }
   ],
@@ -1832,6 +2035,18 @@
         "dimension": "实验与反馈迭代",
         "level": 1.5,
         "chain": "v6多变量回退→只恢复to_chars→同机交替→229/20→820行差分→平台待测"
+      },
+      {
+        "unit": "unit-exact-early-termination",
+        "dimension": "技术理解与迁移",
+        "level": 1.5,
+        "chain": "算法级授权→非负部分和证明→229/20→960组差分→四轮服务端收益"
+      },
+      {
+        "unit": "unit-early-exit-iteration",
+        "dimension": "实验与反馈迭代",
+        "level": 1.5,
+        "chain": "v9回退反馈→16维失败→32/64对照→保留32维→平台待测"
       }
     ]
   }
