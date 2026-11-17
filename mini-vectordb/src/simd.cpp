@@ -33,21 +33,13 @@ static float l2sqScalar(const float* a, const float* b, int d) {
 
 #if MVDB_X86
 __attribute__((target("avx2"))) static inline double l2sqExactAvx2(
-    const float* a, const float* b, int d, double cutoff = INFINITY) {
+    const float* a, const float* b, int d) {
   __m256d sums = _mm256_setzero_pd();
   int i = 0;
   for (; i + 4 <= d; i += 4) {
     __m256d x = _mm256_sub_pd(_mm256_cvtps_pd(_mm_loadu_ps(a + i)),
                               _mm256_cvtps_pd(_mm_loadu_ps(b + i)));
     sums = _mm256_add_pd(sums, _mm256_mul_pd(x, x));
-    // Every term is nonnegative. Once the exact partial sum exceeds the
-    // current kth distance, this row cannot enter the ascending TopK.
-    if ((i & 31) == 28) {
-      double partial[4];
-      _mm256_storeu_pd(partial, sums);
-      if (partial[0] + partial[1] + partial[2] + partial[3] > cutoff)
-        return INFINITY;
-    }
   }
   // Match the scalar reference's four accumulators and reduction order.
   double lanes[4];
@@ -291,8 +283,7 @@ __attribute__((target("avx2"))) static inline void addBounded(
   }
   // Distances near the cutoff, including ties and overflow, are decided
   // with the same float64 calculation as the exact scan.
-  const double exactCutoff = (!top.desc && top.nb == top.k) ? top.best[top.k - 1].d : INFINITY;
-  top.add(l2sqExactAvx2(row, query, dim, exactCutoff), pk, rowid);
+  top.add(l2sqExactAvx2(row, query, dim), pk, rowid);
 }
 #endif
 
@@ -357,8 +348,7 @@ __attribute__((target("avx2,fma"))) static inline void addEstimated(
     float estimate, double margin, double underflow) {
   const double cutoff = top.best[top.k - 1].d;
   if (estimate <= FLT_MAX && estimate > cutoff * (1.0 + margin) + underflow) return;
-  const double exactCutoff = (!top.desc && top.nb == top.k) ? top.best[top.k - 1].d : INFINITY;
-  top.add(l2sqExactAvx2(row, query, dim, exactCutoff), pk, rowid);
+  top.add(l2sqExactAvx2(row, query, dim), pk, rowid);
 }
 
 __attribute__((target("avx2,fma"))) static int scanRangePaired(

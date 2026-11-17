@@ -399,7 +399,10 @@ void ThreadPool::loop() {
       (*fn)(i);
       lk.lock();
     }
-    if (--active_ == 0) done_.notify_one();
+    if (--active_ == 0) {
+      activeAtom_.store(0, std::memory_order_release);
+      done_.notify_one();
+    }
   }
 }
 
@@ -411,24 +414,25 @@ void ThreadPool::parallelFor(int jobs, const std::function<void(int)>& fn) {
   {
     std::lock_guard<std::mutex> lk(mu_);
     job_ = &fn;
-    jobs_ = jobs;
+    // Reserve the final chunk for the caller. This removes a lock acquisition
+    // and a queue race from every fan-out while keeping equal-sized chunks.
+    jobs_ = jobs - 1;
     next_ = 0;
     active_ = (int)workers_.size();
+    activeAtom_.store(active_, std::memory_order_release);
     gen_++;
     genAtom_.store(gen_, std::memory_order_release);
   }
   cv_.notify_all();
-  for (;;) {
-    int i;
-    {
-      std::lock_guard<std::mutex> lk(mu_);
-      if (next_ >= jobs_) break;
-      i = next_++;
-    }
-    fn(i);
+  fn(jobs - 1);
+  // The caller's chunk normally finishes at the same time as the worker's.
+  // Spin briefly to avoid a futex round trip on the common two-core case.
+  int spins = 0;
+  while (activeAtom_.load(std::memory_order_acquire) != 0 && spins++ < 2000) cpuRelax();
+  if (activeAtom_.load(std::memory_order_acquire) != 0) {
+    std::unique_lock<std::mutex> lk(mu_);
+    done_.wait(lk, [&] { return active_ == 0; });
   }
-  std::unique_lock<std::mutex> lk(mu_);
-  done_.wait(lk, [&] { return active_ == 0; });
   job_ = nullptr;
 }
 

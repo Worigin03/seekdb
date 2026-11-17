@@ -144,6 +144,7 @@ class ThreadPool {
   int jobs_ = 0;
   int next_ = 0;
   int active_ = 0;
+  std::atomic<int> activeAtom_{0};
   uint64_t gen_ = 0;
   std::atomic<uint64_t> genAtom_{0};
   bool stop_ = false;

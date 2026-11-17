@@ -86,13 +86,10 @@ void Database::ensureCaches(Table& t, int col) {
     cc.hashes.assign(t.nextRowid, 0);
     cc.lens.assign(t.nextRowid, 0);
     cc.offs.assign(t.nextRowid, 0);
-    size_t total = 0;
-    for (uint64_t r = 0; r < t.nextRowid; r++) {
-      if (!t.live[r]) continue;
-      decodeRowAt(t, r, row);
-      total += row[col].s.size();
-    }
-    cc.arena.reserve(total + 16);
+    // Decode each live row once. Values are appended directly to the arena;
+    // reserving a rough lower bound avoids a second full table decode just to
+    // compute the exact byte total.
+    cc.arena.reserve((size_t)t.nextRowid * 4);
     for (uint64_t r = 0; r < t.nextRowid; r++) {
       if (!t.live[r]) continue;
       decodeRowAt(t, r, row);
