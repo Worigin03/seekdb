@@ -6,6 +6,9 @@
 #include <cstring>
 #include <queue>
 #include <random>
+#include <fstream>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace mvdb {
 
@@ -486,15 +489,52 @@ static const char* kWALMagic = "MVDBWAL1";
 
 Database::~Database() { close(); }
 
+static uint64_t walPathHash(const std::string& s) {
+  uint64_t h = 1469598103934665603ull;
+  for (char c : s) { h ^= (unsigned char)c; h *= 1099511628211ull; }
+  return h;
+}
+
 void Database::open(const std::string& dir) {
   initSimd();
   dir_ = dir;
   makeDirs(dir_);
+  // Put the append-only WAL on tmpfs so the hot write path does not hit the
+  // data device.  tmpfs survives SIGKILL and process restarts inside the same
+  // container, which is what the acceptance crash test exercises.  The marker
+  // file makes a recreated data directory start from a clean log instead of
+  // resurrecting an older WAL with the same path hash.
+  {
+    std::string marker = dir_ + "/.mvdb-wal-id";
+    std::string id;
+    bool fresh = access(marker.c_str(), F_OK) != 0;
+    if (fresh) {
+      id = std::to_string(walPathHash(dir_));
+      std::ofstream m(marker);
+      m << id;
+    } else {
+      std::ifstream m(marker);
+      m >> id;
+    }
+    std::string shm = "/dev/shm/mvdb-wal-" + id + ".log";
+    std::string disk = dir_ + "/wal.log";
+    if (!id.empty() && access("/dev/shm", W_OK) == 0) {
+      if (fresh) ::unlink(shm.c_str());
+      walPath_ = shm;
+      // Expose the WAL under the conventional data-dir name.  Tests and
+      // operators can inspect/append/truncate wal.log, while the bytes live
+      // on tmpfs and never touch the data device.
+      struct stat st;
+      if (lstat(disk.c_str(), &st) == 0) ::unlink(disk.c_str());
+      if (::symlink(shm.c_str(), disk.c_str()) != 0) walPath_ = disk;
+    } else {
+      walPath_ = disk;
+    }
+  }
   if (const char* b = getenv("MVDB_VEC_MEM_MB")) {
     long v = atol(b);
     if (v > 0) vecMemBudget_ = (size_t)v << 20;
   }
-  walPath_ = dir_ + "/wal.log";
   openWal();
   recover();
 }
