@@ -28,8 +28,10 @@ void VecStore::init(int dim, const std::string& path, size_t memBudgetBytes) {
   free(mem_);
   mem_ = nullptr;
   sketch_.clear();
+  sketchPacked_.clear();
   sketchSafe_.clear();
   sketchNormScaled_.clear();
+  sketchNormInt_.clear();
   sketchSum_.clear();
   sketchAbs_.clear();
   sketchEnabled_ = dim > 0 && dim <= 1024;
@@ -44,8 +46,10 @@ void VecStore::reset() {
   disk_ = false;
   fileCap_ = 0;
   sketch_.clear();
+  sketchPacked_.clear();
   sketchSafe_.clear();
   sketchNormScaled_.clear();
+  sketchNormInt_.clear();
   sketchSum_.clear();
   sketchAbs_.clear();
 }
@@ -111,8 +115,10 @@ void VecStore::set(uint64_t rowid, const float* v) {
   if (!sketchEnabled_ || rowid >= 131072) {
     sketchEnabled_ = false;
     sketch_.clear();
+  sketchPacked_.clear();
     sketchSafe_.clear();
     sketchNormScaled_.clear();
+  sketchNormInt_.clear();
     sketchSum_.clear();
     sketchAbs_.clear();
     return;
@@ -121,6 +127,7 @@ void VecStore::set(uint64_t rowid, const float* v) {
   if (sketch_.size() < need) sketch_.resize(need);
   if (sketchSafe_.size() <= rowid) sketchSafe_.resize((size_t)rowid + 1);
   if (sketchNormScaled_.size() <= rowid) sketchNormScaled_.resize((size_t)rowid + 1);
+  if (sketchNormInt_.size() <= rowid) sketchNormInt_.resize((size_t)rowid + 1);
   if (sketchSum_.size() <= rowid) sketchSum_.resize((size_t)rowid + 1);
   if (sketchAbs_.size() <= rowid) sketchAbs_.resize((size_t)rowid + 1);
   int8_t* dst = sketch_.data() + (size_t)rowid * (size_t)dim_;
@@ -149,6 +156,7 @@ void VecStore::set(uint64_t rowid, const float* v) {
   }
   sketchSafe_[rowid] = safe ? 1 : 0;
   sketchNormScaled_[rowid] = norm / (kStep * kStep);
+  sketchNormInt_[rowid] = (int32_t)std::floor(norm / (kStep * kStep));
   sketchSum_[rowid] = ssum;
   sketchAbs_[rowid] = sabs;
 }

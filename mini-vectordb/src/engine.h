@@ -43,11 +43,13 @@ class VecStore {
   const int8_t* sketchBase() const { return sketch_.data(); }
   const uint8_t* sketchSafe() const { return sketchSafe_.data(); }
   const double* sketchNormScaled() const { return sketchNormScaled_.data(); }
+  const int32_t* sketchNormInt() const { return sketchNormInt_.data(); }
+  const int8_t* sketchPacked() const { return sketchPacked_.empty() ? nullptr : sketchPacked_.data(); }
   const int32_t* sketchSum() const { return sketchSum_.data(); }
   const int32_t* sketchAbs() const { return sketchAbs_.data(); }
   bool sketchReady(uint64_t rows) const {
     return sketchEnabled_ && dim_ > 0 && sketchSafe_.size() >= rows &&
-           sketchNormScaled_.size() >= rows && sketchSum_.size() >= rows &&
+           sketchNormScaled_.size() >= rows && sketchNormInt_.size() >= rows && sketchSum_.size() >= rows &&
            sketchAbs_.size() >= rows &&
            sketch_.size() >= (size_t)rows * (size_t)dim_;
   }
@@ -66,8 +68,10 @@ class VecStore {
   float* mem_ = nullptr;   // owned; grown with realloc (no zero-fill, may extend in place)
   bool sketchEnabled_ = false;
   std::vector<int8_t> sketch_;
+  std::vector<int8_t> sketchPacked_;
   std::vector<uint8_t> sketchSafe_;
   std::vector<double> sketchNormScaled_;
+  std::vector<int32_t> sketchNormInt_;
   std::vector<int32_t> sketchSum_;
   std::vector<int32_t> sketchAbs_;
   File file_;

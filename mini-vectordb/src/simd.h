@@ -37,13 +37,20 @@ int scanTopKGather(const float* base, int dim, const uint32_t* rowids, size_t co
 // only the last-bit rounding of reported float64 distances may differ.
 int scanTopKRangeQuant(const float* base, int dim, const int8_t* qbase,
                        const uint8_t* qsafe, const double* normScaled,
-                       const int32_t* rowSum, const int32_t* rowAbs,
+                       const int32_t* normInt, const int32_t* rowSum, const int32_t* rowAbs,
                        const uint8_t* live, const int64_t* pks, uint64_t n,
                        const float* q, const uint8_t* qquant, int k, int desc,
                        CandOut* out);
+int scanTopKRangeQuantPacked(const float* base, int dim, const int8_t* qbase,
+                             const int8_t* packed, const uint8_t* qpack,
+                             const uint8_t* qsafe, const double* normScaled,
+                             const int32_t* normInt, const int32_t* rowSum,
+                             const int32_t* rowAbs, const uint8_t* live,
+                             const int64_t* pks, uint64_t n, const float* q,
+                             const uint8_t* qquant, int k, int desc, CandOut* out);
 int scanTopKGatherQuant(const float* base, int dim, const int8_t* qbase,
                         const uint8_t* qsafe, const double* normScaled,
-                        const int32_t* rowSum, const int32_t* rowAbs,
+                        const int32_t* normInt, const int32_t* rowSum, const int32_t* rowAbs,
                         const uint32_t* rowids, size_t count, const int64_t* pks,
                         const float* q, const uint8_t* qquant, int k, int desc,
                         CandOut* out);

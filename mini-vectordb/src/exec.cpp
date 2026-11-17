@@ -743,19 +743,30 @@ void Database::execSelect(const Stmt& st, ResultSet& rs, const std::string& sear
       const int kd = orderDesc ? 1 : 0;
       std::vector<uint8_t> qsketch;
       const bool useSketch =
-          !orderDesc && t->vecs && t->vecs->sketchReady(t->nextRowid) &&
+          !getenv("MVDB_NO_SKETCH") && !orderDesc && t->vecs && t->vecs->sketchReady(t->nextRowid) &&
           t->vecs->sketchQuery(orderQ.data(), qsketch);
       const int8_t* skbase = useSketch ? t->vecs->sketchBase() : nullptr;
       const uint8_t* sksafe = useSketch ? t->vecs->sketchSafe() : nullptr;
       const double* sknorm = useSketch ? t->vecs->sketchNormScaled() : nullptr;
       const int32_t* sksum = useSketch ? t->vecs->sketchSum() : nullptr;
+      const int32_t* sknormInt = useSketch ? t->vecs->sketchNormInt() : nullptr;
       const int32_t* skabs = useSketch ? t->vecs->sketchAbs() : nullptr;
+      const int8_t* skpacked = useSketch ? t->vecs->sketchPacked() : nullptr;
+      std::vector<uint8_t> qpack;
+      if (useSketch && skpacked && dim > 0 && (dim & 7) == 0) {
+        qpack.resize((size_t)(dim / 8) * 64);
+        for (int g = 0; g < dim / 8; g++) {
+          const uint8_t* q8 = qsketch.data() + (size_t)g * 8;
+          for (int rep = 0; rep < 8; rep++)
+            memcpy(qpack.data() + (size_t)g * 64 + (size_t)rep * 8, q8, 8);
+        }
+      }
       // One chunk of the scan: rows [lo, hi) -> best k, ordered best first.
       auto runChunk = [&](uint64_t lo, uint64_t hi, CandOut* out) -> int {
         if (lo >= hi) return 0;
         if (cachedRows) {
           if (useSketch)
-            return scanTopKGatherQuant(vbase, dim, skbase, sksafe, sknorm, sksum,
+            return scanTopKGatherQuant(vbase, dim, skbase, sksafe, sknorm, sknormInt, sksum,
                                        skabs, cachedRows->data() + lo, hi - lo,
                                        t->pkOf.data(), orderQ.data(), qsketch.data(),
                                        (int)k, kd, out);
@@ -777,21 +788,29 @@ void Database::execSelect(const Stmt& st, ResultSet& rs, const std::string& sear
             }
           }
           if (useSketch)
-            return scanTopKGatherQuant(vbase, dim, skbase, sksafe, sknorm, sksum,
+            return scanTopKGatherQuant(vbase, dim, skbase, sksafe, sknorm, sknormInt, sksum,
                                        skabs, hits.data(), hits.size(), t->pkOf.data(),
                                        orderQ.data(), qsketch.data(), (int)k, kd, out);
           return scanTopKGather(vbase, dim, hits.data(), hits.size(), t->pkOf.data(),
                                 orderQ.data(), (int)k, kd, out);
         }
-        int got = useSketch
-                      ? scanTopKRangeQuant(vbase + lo * (size_t)dim, dim,
-                                           skbase + lo * (size_t)dim, sksafe + lo,
-                                           sknorm + lo, sksum + lo, skabs + lo,
-                                           t->live.data() + lo, t->pkOf.data() + lo, hi - lo,
-                                           orderQ.data(), qsketch.data(), (int)k, kd, out)
-                      : scanTopKRange(vbase + lo * (size_t)dim, dim, t->live.data() + lo,
-                                      t->pkOf.data() + lo, hi - lo, orderQ.data(), (int)k,
-                                      kd, out);
+        int got = 0;
+        if (useSketch && skpacked && !qpack.empty() && (lo & 7) == 0) {
+          got = scanTopKRangeQuantPacked(
+              vbase + lo * (size_t)dim, dim, skbase + lo * (size_t)dim,
+              skpacked + (lo / 8) * (size_t)dim * 8, qpack.data(), sksafe + lo,
+              sknorm + lo, sknormInt + lo, sksum + lo, skabs + lo, t->live.data() + lo,
+              t->pkOf.data() + lo, hi - lo, orderQ.data(), qsketch.data(), (int)k, kd, out);
+        } else if (useSketch) {
+          got = scanTopKRangeQuant(vbase + lo * (size_t)dim, dim,
+                                   skbase + lo * (size_t)dim, sksafe + lo,
+                                   sknorm + lo, sknormInt + lo, sksum + lo, skabs + lo,
+                                   t->live.data() + lo, t->pkOf.data() + lo, hi - lo,
+                                   orderQ.data(), qsketch.data(), (int)k, kd, out);
+        } else {
+          got = scanTopKRange(vbase + lo * (size_t)dim, dim, t->live.data() + lo,
+                              t->pkOf.data() + lo, hi - lo, orderQ.data(), (int)k, kd, out);
+        }
         for (int i = 0; i < got; i++) out[i].rowid += (uint32_t)lo;
         return got;
       };
