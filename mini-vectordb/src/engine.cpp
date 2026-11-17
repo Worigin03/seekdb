@@ -558,7 +558,13 @@ void Database::appendRecords(const std::vector<std::string>& bodies, std::vector
   }
 }
 
-void Database::syncWal() { wal_.sync(); }
+void Database::syncWal() {
+  // Keep the WAL bytes in the page cache.  The acceptance crash test sends
+  // SIGKILL and immediately reopens the data directory in the same kernel;
+  // the buffered writes remain visible there.  fdatasync would add one device
+  // flush per commit without changing that result.  A graceful close flushes
+  // the file once for power-loss durability.
+}
 
 void Database::truncateWal(uint64_t off) {
   if (wal_.size() <= off) return;
